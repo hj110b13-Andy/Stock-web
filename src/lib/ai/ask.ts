@@ -18,24 +18,25 @@ const STOPWORDS = new Set([
 async function buildStockGrounding(
   target: { symbol: string; market: Market | undefined }
 ): Promise<{ symbol: string; text: string } | undefined> {
-  try {
-    const [quote, chart] = await Promise.all([
-      getQuote(target.symbol, target.market),
-      getChart(target.symbol, "3m", target.market),
-    ]);
+  const [quote, chart] = await Promise.all([
+    getQuote(target.symbol, target.market),
+    getChart(target.symbol, "3m", target.market),
+  ]);
+  if (!quote) return undefined;
+  const changeLabel = quote.change >= 0 ? "上漲" : "下跌";
+  const lines = [
+    `股票：${quote.name}（${quote.symbol}，${quote.market === "TW" ? "台股" : "美股"}）`,
+    `目前價格：${quote.price} ${quote.currency}，${changeLabel} ${Math.abs(quote.change)}（${quote.changePercent}%）`,
+    `今日：開 ${quote.open} / 高 ${quote.high} / 低 ${quote.low} / 昨收 ${quote.prevClose}，成交量 ${quote.volume.toLocaleString()}`,
+  ];
+  if (chart) {
     const recent = chart.candles.slice(-10);
-    const changeLabel = quote.change >= 0 ? "上漲" : "下跌";
-    const text = [
-      `股票：${quote.name}（${quote.symbol}，${quote.market === "TW" ? "台股" : "美股"}）`,
-      `目前價格：${quote.price} ${quote.currency}，${changeLabel} ${Math.abs(quote.change)}（${quote.changePercent}%）`,
-      `今日：開 ${quote.open} / 高 ${quote.high} / 低 ${quote.low} / 昨收 ${quote.prevClose}，成交量 ${quote.volume.toLocaleString()}`,
-      `近 10 個交易日收盤價：${recent.map((c) => `${c.time}=${c.close}`).join(", ")}`,
-      quote.isMock ? "（注意：目前為離線示範資料，非即時真實報價）" : "（來源：即時/近即時公開資料）",
-    ].join("\n");
-    return { symbol: quote.symbol, text };
-  } catch {
-    return undefined;
+    lines.push(`近 10 個交易日收盤價：${recent.map((c) => `${c.time}=${c.close}`).join(", ")}`);
+  } else {
+    lines.push("（歷史走勢資料目前無法取得）");
   }
+  lines.push("（來源：即時/近即時公開資料）");
+  return { symbol: quote.symbol, text: lines.join("\n") };
 }
 
 function guessSymbolFromText(text: string): { symbol: string; market: Market } | undefined {
@@ -70,11 +71,8 @@ export async function answerQuestion(
     target ? buildStockGrounding(target) : Promise.resolve(undefined),
     getIndices()
       .then((indices) => {
-        const lines = indices.map((i) => `${i.name}：${i.price}（${i.change >= 0 ? "+" : ""}${i.changePercent}%）`);
-        if (indices.some((i) => i.isMock)) {
-          lines.push("（注意：以上部分或全部指數為離線示範資料，非即時真實報價，數字可能與實際盤面有落差）");
-        }
-        return lines.join("\n");
+        if (indices.length === 0) return "（大盤指數目前無法取得）";
+        return indices.map((i) => `${i.name}：${i.price}（${i.change >= 0 ? "+" : ""}${i.changePercent}%）`).join("\n");
       })
       .catch(() => ""),
   ]);
@@ -92,8 +90,7 @@ export async function answerQuestion(
     "你是一個股票研究網站上的助理，回答繁體中文問題，語氣專業、精簡、條列清楚。",
     "你會同時拿到「個股資料」（若使用者問特定股票）與「大盤概況」（台股加權指數、道瓊、S&P 500、那斯達克）。",
     "台股與美股常互相影響（例如美股科技股/半導體夜間走勢，隔天常牽動台股電子權值股），請在分析時主動連結兩邊的資料，而不是只看單一市場；沒有明顯關聯時不用勉強牽拖。",
-    "請根據資料回答，不要編造資料中沒有的數字。",
-    "如果資料標示為離線示範資料，請提醒使用者這只是示範用途，不是真實報價。",
+    "請根據資料回答，不要編造資料中沒有的數字；若資料標示為無法取得，請誠實告知使用者目前查不到該資訊，不要用其他數字代替。",
     "務必提醒使用者：這是資訊整理，不構成投資建議。",
     "使用者之前的提問與你的回覆會一併附上作為對話紀錄，回答新問題時請自然承接對話脈絡（例如使用者接著問「那美股呢」時，要記得他上一句在問什麼）。",
   ].join("\n");

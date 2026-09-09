@@ -1,6 +1,5 @@
 import { cached } from "./cache";
-import { mockCandles, mockQuote, mockQuoteFromBase } from "./mock";
-import type { Candle, ChartRange, Fundamentals, IndexQuote, Market, Quote, SearchItem } from "./types";
+import type { ChartRange, ChartResponse, Fundamentals, IndexQuote, Market, Quote, SearchItem } from "./types";
 import { TW_UNIVERSE, US_UNIVERSE, findInUniverse, UniverseEntry } from "./universe";
 import { fetchTwseCandles, fetchTwseFundamentalsAll, fetchTwseQuote, fetchTwseQuotesBatch } from "./twse";
 import { fetchUsCandles, fetchUsFundamentals, fetchUsQuote, fetchUsQuotesBatch } from "./us";
@@ -22,33 +21,37 @@ export function normalizeSymbol(symbolInput: string): string {
 const QUOTE_TTL_MS = 20_000;
 const CHART_TTL_MS = 5 * 60_000;
 
-export async function getQuote(symbolInput: string, marketHint?: Market): Promise<Quote> {
+/**
+ * Returns null (never a fabricated value) when the live source can't be
+ * reached — stock data must be accurate, so an unavailable quote is shown
+ * as unavailable rather than filled in with a guess.
+ */
+export async function getQuote(symbolInput: string, marketHint?: Market): Promise<Quote | null> {
   const symbol = normalizeSymbol(symbolInput);
   const market = marketHint ?? detectMarket(symbol);
   return cached(`quote:${market}:${symbol}`, QUOTE_TTL_MS, async () => {
     try {
       return market === "TW" ? await fetchTwseQuote(symbol) : await fetchUsQuote(symbol);
     } catch {
-      return mockQuote(symbol, market);
+      return null;
     }
   });
 }
 
-export async function getChart(symbolInput: string, range: ChartRange, marketHint?: Market): Promise<{
-  symbol: string;
-  market: Market;
-  range: ChartRange;
-  candles: Candle[];
-  isMock: boolean;
-}> {
+/** Returns null when the live source can't be reached; never fabricated candles. */
+export async function getChart(
+  symbolInput: string,
+  range: ChartRange,
+  marketHint?: Market
+): Promise<ChartResponse | null> {
   const symbol = normalizeSymbol(symbolInput);
   const market = marketHint ?? detectMarket(symbol);
   return cached(`chart:${market}:${symbol}:${range}`, CHART_TTL_MS, async () => {
     try {
       const candles = market === "TW" ? await fetchTwseCandles(symbol, range) : await fetchUsCandles(symbol, range);
-      return { symbol, market, range, candles, isMock: false };
+      return { symbol, market, range, candles };
     } catch {
-      return { symbol, market, range, candles: mockCandles(symbol, range, market), isMock: true };
+      return null;
     }
   });
 }
@@ -56,9 +59,8 @@ export async function getChart(symbolInput: string, range: ChartRange, marketHin
 const FUNDAMENTALS_TTL_MS = 60 * 60_000; // fundamentals don't move intraday; refresh hourly
 
 /**
- * Returns null (not a mock value) when unavailable — fabricating a P/E
- * ratio or dividend yield next to a real price is more misleading than
- * just omitting it, unlike price data which is clearly demo-labeled.
+ * Returns null when unavailable — fabricating a P/E ratio or dividend
+ * yield next to a real price would be more misleading than just omitting it.
  */
 export async function getFundamentals(symbolInput: string, marketHint?: Market): Promise<Fundamentals | null> {
   const symbol = normalizeSymbol(symbolInput);
@@ -74,41 +76,33 @@ export async function getFundamentals(symbolInput: string, marketHint?: Market):
   }
 }
 
-const INDEX_DEFS: Array<{ symbol: string; name: string; market: Market; misCode?: string; basePrice: number }> = [
-  { symbol: "TAIEX", name: "台股加權指數", market: "TW", misCode: "t00", basePrice: 22800 },
-  { symbol: "^DJI", name: "道瓊工業指數", market: "US", basePrice: 42500 },
-  { symbol: "^GSPC", name: "S&P 500", market: "US", basePrice: 5850 },
-  { symbol: "^IXIC", name: "那斯達克指數", market: "US", basePrice: 18500 },
+const INDEX_DEFS: Array<{ symbol: string; name: string; market: Market; misCode?: string }> = [
+  { symbol: "TAIEX", name: "台股加權指數", market: "TW", misCode: "t00" },
+  { symbol: "^DJI", name: "道瓊工業指數", market: "US" },
+  { symbol: "^GSPC", name: "S&P 500", market: "US" },
+  { symbol: "^IXIC", name: "那斯達克指數", market: "US" },
 ];
 
+/**
+ * Only includes indices that were actually fetched successfully — an
+ * index that failed to load is simply omitted rather than shown with a
+ * substitute value.
+ */
 export async function getIndices(): Promise<IndexQuote[]> {
   return cached("indices", QUOTE_TTL_MS, async () => {
-    return Promise.all(
-      INDEX_DEFS.map(async (def) => {
+    const results = await Promise.all(
+      INDEX_DEFS.map(async (def): Promise<IndexQuote | null> => {
         try {
-          if (def.market === "TW" && def.misCode) {
-            const q = await fetchTwseQuote(def.misCode);
-            return toIndexQuote(def, q.price, q.change, q.changePercent, false);
-          }
-          const q = await fetchUsQuote(def.symbol);
-          return toIndexQuote(def, q.price, q.change, q.changePercent, false);
+          const q =
+            def.market === "TW" && def.misCode ? await fetchTwseQuote(def.misCode) : await fetchUsQuote(def.symbol);
+          return { symbol: def.symbol, name: def.name, market: def.market, price: q.price, change: q.change, changePercent: q.changePercent };
         } catch {
-          const mock = mockQuoteFromBase(def.symbol, def.name, def.market, def.market === "TW" ? "TWD" : "USD", def.basePrice);
-          return toIndexQuote(def, mock.price, mock.change, mock.changePercent, true);
+          return null;
         }
       })
     );
+    return results.filter((r): r is IndexQuote => r !== null);
   });
-}
-
-function toIndexQuote(
-  def: { symbol: string; name: string; market: Market },
-  price: number,
-  change: number,
-  changePercent: number,
-  isMock: boolean
-): IndexQuote {
-  return { symbol: def.symbol, name: def.name, market: def.market, price, change, changePercent, isMock };
 }
 
 /**
@@ -118,9 +112,11 @@ function toIndexQuote(
  * movers, highlights boards, and the daily brief all hit the same cached
  * map instead of each re-fetching (or worse, each firing 20+ of their own
  * concurrent per-symbol requests, which is what made list pages show
- * mostly-mock data even when single-stock pages were fetching real quotes
- * fine: TWSE/Yahoo's single-symbol endpoints aren't meant for that many
- * concurrent hits from one caller and tend to time out or get throttled).
+ * mostly-stale/failed data even when single-stock pages were fetching real
+ * quotes fine: TWSE/Yahoo's single-symbol endpoints aren't meant for that
+ * many concurrent hits from one caller and tend to time out or get
+ * throttled). Symbols that fail both the batch and the per-symbol retry
+ * are simply absent from the map — never filled in with a guess.
  */
 async function fetchMarketQuoteMap(market: Market): Promise<Map<string, Quote>> {
   const pool = market === "TW" ? TW_UNIVERSE : US_UNIVERSE;
@@ -140,16 +136,18 @@ async function fetchMarketQuoteMap(market: Market): Promise<Map<string, Quote>> 
   const missing = pool.filter((e) => !map.has(e.symbol));
   if (missing.length > 0) {
     const singles = await Promise.all(
-      missing.map(async (entry): Promise<[string, Quote]> => {
+      missing.map(async (entry): Promise<[string, Quote] | null> => {
         try {
           const q = market === "TW" ? await fetchTwseQuote(entry.symbol) : await fetchUsQuote(entry.symbol);
           return [entry.symbol, q];
         } catch {
-          return [entry.symbol, mockQuote(entry.symbol, entry.market)];
+          return null;
         }
       })
     );
-    for (const [symbol, quote] of singles) map.set(symbol, quote);
+    for (const s of singles) {
+      if (s) map.set(s[0], s[1]);
+    }
   }
 
   return map;
@@ -173,6 +171,7 @@ export interface SearchFilters {
   sortDir?: "asc" | "desc";
 }
 
+/** Stocks with no live quote available are excluded, never shown with a placeholder price. */
 export async function searchStocks(filters: SearchFilters): Promise<SearchItem[]> {
   let pool: UniverseEntry[] = [...TW_UNIVERSE, ...US_UNIVERSE];
   if (filters.market) pool = pool.filter((e) => e.market === filters.market);
@@ -193,19 +192,21 @@ export async function searchStocks(filters: SearchFilters): Promise<SearchItem[]
     for (const [symbol, quote] of quoteMaps[i]) quoteBySymbol.set(`${m}:${symbol}`, quote);
   });
 
-  let items: SearchItem[] = pool.map((entry) => {
-    const q = quoteBySymbol.get(`${entry.market}:${entry.symbol}`);
-    return {
-      symbol: entry.symbol,
-      market: entry.market,
-      name: entry.name,
-      sector: entry.sector,
-      price: q?.price ?? 0,
-      changePercent: q?.changePercent ?? 0,
-      volume: q?.volume ?? 0,
-      isMock: q?.isMock ?? true,
-    };
-  });
+  let items: SearchItem[] = pool
+    .map((entry): SearchItem | null => {
+      const q = quoteBySymbol.get(`${entry.market}:${entry.symbol}`);
+      if (!q) return null;
+      return {
+        symbol: entry.symbol,
+        market: entry.market,
+        name: entry.name,
+        sector: entry.sector,
+        price: q.price,
+        changePercent: q.changePercent,
+        volume: q.volume,
+      };
+    })
+    .filter((i): i is SearchItem => i !== null);
 
   if (filters.minChangePercent !== undefined) {
     items = items.filter((i) => i.changePercent >= filters.minChangePercent!);
@@ -253,24 +254,20 @@ export async function getMultiSignalStocks(market: Market, minSignals = 2): Prom
       pool.map(async (entry): Promise<MomentumItem | null> => {
         const quote = quoteMap.get(entry.symbol);
         if (!quote) return null;
-        try {
-          const chart = await getChart(entry.symbol, "3m", entry.market);
-          const signals = computeSignals(chart.candles, quote.price, "3m");
-          if (signals.length < minSignals) return null;
-          return {
-            symbol: quote.symbol,
-            market: quote.market,
-            name: quote.name,
-            sector: entry.sector,
-            price: quote.price,
-            changePercent: quote.changePercent,
-            volume: quote.volume,
-            isMock: quote.isMock || chart.isMock,
-            signals,
-          };
-        } catch {
-          return null;
-        }
+        const chart = await getChart(entry.symbol, "3m", entry.market);
+        if (!chart) return null;
+        const signals = computeSignals(chart.candles, quote.price, "3m");
+        if (signals.length < minSignals) return null;
+        return {
+          symbol: quote.symbol,
+          market: quote.market,
+          name: quote.name,
+          sector: entry.sector,
+          price: quote.price,
+          changePercent: quote.changePercent,
+          volume: quote.volume,
+          signals,
+        };
       })
     );
 

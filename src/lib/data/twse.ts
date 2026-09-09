@@ -6,8 +6,9 @@ import { findInUniverse } from "./universe";
 // - Real-time-ish quote (delayed): mis.twse.com.tw "getStockInfo"
 // - Daily OHLC history: www.twse.com.tw "STOCK_DAY"
 // Both are unofficial-but-widely-used public JSON endpoints. They may be
-// unreachable from sandboxed/offline environments; callers must fall back
-// to mock data on any failure (see lib/data/index.ts).
+// unreachable from sandboxed/offline environments; callers treat any
+// failure as "data unavailable" (see lib/data/index.ts) rather than
+// fabricating a substitute value.
 
 interface MisRow {
   c: string; // code
@@ -44,7 +45,6 @@ function rowToQuote(row: MisRow): Quote {
     volume: (parseInt(row.v, 10) || 0) * 1000,
     currency: "TWD",
     updatedAt: new Date().toISOString(),
-    isMock: false,
   };
 }
 

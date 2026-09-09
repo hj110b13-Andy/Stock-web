@@ -1,7 +1,6 @@
 import Link from "next/link";
 import IndexCard from "@/components/IndexCard";
 import StockTable from "@/components/StockTable";
-import DataBadge from "@/components/DataBadge";
 import MarketTabs from "@/components/MarketTabs";
 import WatchlistSection from "@/components/WatchlistSection";
 import DailyBriefCard from "@/components/DailyBriefCard";
@@ -71,12 +70,6 @@ export default async function HomePage() {
       </section>
 
       <section>
-        <p className="mb-2 text-xs text-(--text-muted)">
-          <span className="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-(--accent) align-middle" />
-          即時資料
-          <span className="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-(--text-muted) align-middle" />
-          示範資料（該股票暫時無法取得即時報價）
-        </p>
         <div className="rounded-lg border border-(--gridline) bg-(--surface-1) p-4">
           <div className="flex items-center justify-between mb-1">
             <h2 className="font-semibold">焦點排行</h2>
@@ -102,17 +95,14 @@ export default async function HomePage() {
 }
 
 function IndexGroup({ indices }: { indices: Awaited<ReturnType<typeof getIndices>> }) {
-  const anyMock = indices.some((i) => i.isMock);
+  if (indices.length === 0) {
+    return <p className="py-6 text-center text-sm text-(--text-muted)">大盤指數目前無法取得，請稍後再試</p>;
+  }
   return (
-    <div>
-      <div className="mb-2 flex justify-end">
-        <DataBadge isMock={anyMock} />
-      </div>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-        {indices.map((idx) => (
-          <IndexCard key={idx.symbol} index={idx} />
-        ))}
-      </div>
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+      {indices.map((idx) => (
+        <IndexCard key={idx.symbol} index={idx} />
+      ))}
     </div>
   );
 }

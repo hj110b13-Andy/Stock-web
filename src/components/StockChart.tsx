@@ -14,7 +14,6 @@ import {
 import type { Candle, ChartRange } from "@/lib/data";
 import { computeSignals } from "@/lib/signals";
 import { formatPrice, formatVolume } from "@/lib/format";
-import DataBadge from "./DataBadge";
 import SignalTags from "./SignalTags";
 
 const RANGE_LABELS: Record<ChartRange, string> = { "1m": "1個月", "3m": "3個月", "6m": "6個月", "1y": "1年" };
@@ -40,7 +39,6 @@ export default function StockChart({
 }) {
   const [range, setRange] = useState<ChartRange>("3m");
   const [candles, setCandles] = useState<Candle[] | null>(null);
-  const [isMock, setIsMock] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const tooltipRef = useRef<HTMLDivElement | null>(null);
@@ -53,18 +51,21 @@ export default function StockChart({
   useEffect(() => {
     let cancelled = false;
     fetch(`/api/chart/${encodeURIComponent(symbol)}?range=${range}&market=${market}`)
-      .then((res) => {
-        if (!res.ok) throw new Error("圖表資料載入失敗");
-        return res.json();
+      .then(async (res) => {
+        const data = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(data?.error ?? "圖表資料暫時無法取得");
+        return data;
       })
       .then((data) => {
         if (cancelled) return;
         setCandles(data.candles);
-        setIsMock(Boolean(data.isMock));
         setError(null);
       })
       .catch((err) => {
-        if (!cancelled) setError(err.message ?? "圖表資料載入失敗");
+        if (!cancelled) {
+          setCandles(null);
+          setError(err.message ?? "圖表資料暫時無法取得");
+        }
       });
     return () => {
       cancelled = true;
@@ -214,7 +215,6 @@ export default function StockChart({
             </button>
           ))}
         </div>
-        {candles && <DataBadge isMock={isMock} />}
       </div>
       {signals.length > 0 && (
         <div className="mb-3">

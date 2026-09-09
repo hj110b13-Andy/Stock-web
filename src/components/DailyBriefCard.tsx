@@ -1,17 +1,13 @@
-import DataBadge from "@/components/DataBadge";
 import type { DailyBrief } from "@/lib/ai/brief";
 
 export default function DailyBriefCard({ brief }: { brief: DailyBrief }) {
   return (
     <section className="rounded-lg border border-(--gridline) bg-(--surface-1) p-5">
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <h2 className="font-semibold">📰 今日市場快報</h2>
-          {!brief.usedAi && (
-            <span className="rounded-full bg-(--page-plane) px-2 py-0.5 text-[11px] text-(--text-muted)">資料整理</span>
-          )}
-        </div>
-        <DataBadge isMock={brief.isMockData} />
+      <div className="flex items-center gap-2">
+        <h2 className="font-semibold">📰 今日市場快報</h2>
+        {!brief.usedAi && (
+          <span className="rounded-full bg-(--page-plane) px-2 py-0.5 text-[11px] text-(--text-muted)">資料整理</span>
+        )}
       </div>
       <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-(--text-secondary)">{brief.text}</p>
       <p className="mt-3 text-[11px] text-(--text-muted)">

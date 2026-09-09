@@ -1,10 +1,9 @@
 import { notFound } from "next/navigation";
 import StockChart from "@/components/StockChart";
-import DataBadge from "@/components/DataBadge";
 import AskAboutButton from "@/components/AskAboutButton";
 import WatchlistButton from "@/components/WatchlistButton";
 import FundamentalsCard from "@/components/FundamentalsCard";
-import { getQuote, getFundamentals } from "@/lib/data";
+import { getQuote, getFundamentals, detectMarket, normalizeSymbol } from "@/lib/data";
 import type { Market } from "@/lib/data";
 import { formatChange, formatPercent, formatPrice, formatVolume, priceDirectionClass } from "@/lib/format";
 
@@ -26,6 +25,21 @@ export default async function StockDetailPage({ params, searchParams }: PageProp
     getFundamentals(symbol, marketHint),
   ]);
 
+  if (!quote) {
+    const resolvedSymbol = normalizeSymbol(symbol);
+    const resolvedMarket = marketHint ?? detectMarket(resolvedSymbol);
+    return (
+      <div className="rounded-lg border border-(--gridline) bg-(--surface-1) p-6 text-center">
+        <h1 className="text-lg font-semibold">
+          {resolvedSymbol}（{resolvedMarket === "TW" ? "台股" : "美股"}）目前無法取得即時資料
+        </h1>
+        <p className="mt-2 text-sm text-(--text-secondary)">
+          可能是資料來源暫時無法連線或代碼不存在，請稍後再試一次。
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <section className="rounded-lg border border-(--gridline) bg-(--surface-1) p-6">
@@ -37,7 +51,6 @@ export default async function StockDetailPage({ params, searchParams }: PageProp
               <span className="rounded bg-(--page-plane) px-2 py-0.5 text-xs text-(--text-muted)">
                 {quote.symbol} · {quote.market === "TW" ? "台股" : "美股"}
               </span>
-              <DataBadge isMock={quote.isMock} />
             </div>
             <div className="mt-3 flex items-baseline gap-3">
               <span className="text-4xl font-bold tabular-nums">{formatPrice(quote.price, quote.currency)}</span>

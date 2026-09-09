@@ -81,7 +81,6 @@ export async function fetchUsQuote(symbol: string): Promise<Quote> {
     volume: meta.regularMarketVolume ?? 0,
     currency: meta.currency ?? "USD",
     updatedAt: new Date().toISOString(),
-    isMock: false,
   };
 }
 
@@ -142,7 +141,6 @@ export async function fetchUsQuotesBatch(symbols: string[]): Promise<Map<string,
       volume: r.regularMarketVolume ?? 0,
       currency: r.currency ?? "USD",
       updatedAt: new Date().toISOString(),
-      isMock: false,
     });
   }
   return map;

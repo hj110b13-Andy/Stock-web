@@ -35,12 +35,6 @@ export default function StockTable({ items, emptyLabel }: { items: SearchItem[];
                 <span className="ml-2 rounded bg-(--page-plane) px-1.5 py-0.5 text-[10px] text-(--text-muted)">
                   {item.market === "TW" ? "台股" : "美股"}
                 </span>
-                <span
-                  className={`ml-1.5 inline-block h-1.5 w-1.5 rounded-full align-middle ${
-                    item.isMock ? "bg-(--text-muted)" : "bg-(--accent)"
-                  }`}
-                  title={item.isMock ? "示範資料（無法取得即時報價，暫以離線資料顯示）" : "即時資料"}
-                />
               </td>
               <td className="py-2.5 pr-4 text-(--text-secondary)">{item.sector}</td>
               <td className="py-2.5 pr-4 text-right tabular-nums">

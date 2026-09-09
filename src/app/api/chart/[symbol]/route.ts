@@ -15,6 +15,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ symb
   }
   try {
     const chart = await getChart(symbol, range, market ?? undefined);
+    if (!chart) {
+      return NextResponse.json({ error: "目前無法取得歷史圖表資料" }, { status: 503 });
+    }
     return NextResponse.json(chart);
   } catch (err) {
     return NextResponse.json({ error: (err as Error).message }, { status: 500 });

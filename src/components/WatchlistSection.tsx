@@ -55,6 +55,7 @@ export default function WatchlistSection() {
       list.map(async (w) => {
         try {
           const res = await fetch(`/api/quote/${encodeURIComponent(w.symbol)}?market=${w.market}`);
+          if (!res.ok) return null;
           const q: Quote = await res.json();
           return {
             symbol: q.symbol,
@@ -64,7 +65,6 @@ export default function WatchlistSection() {
             price: q.price,
             changePercent: q.changePercent,
             volume: q.volume,
-            isMock: q.isMock,
           } satisfies SearchItem;
         } catch {
           return null;

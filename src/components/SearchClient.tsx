@@ -157,14 +157,7 @@ function MarketSection({
       ) : (
         <>
           <p className="text-xs text-(--text-muted)">
-            共 {items.length} 筆
-            {items.length > 0 &&
-              (() => {
-                const liveCount = items.filter((i) => !i.isMock).length;
-                if (liveCount === items.length) return "，全部為即時資料";
-                if (liveCount === 0) return "，目前皆為示範資料（即時資料源暫時無法連線）";
-                return `，${liveCount} 筆即時、${items.length - liveCount} 筆示範（行末灰點標示）`;
-              })()}
+            共 {items.length} 筆{items.length === 0 ? "（可能是篩選條件過嚴，或即時資料暫時無法取得）" : ""}
           </p>
           <StockTable items={items} />
         </>
