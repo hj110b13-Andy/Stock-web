@@ -148,7 +148,16 @@ export default function SearchClient() {
           </div>
         ) : (
           <>
-            <p className="mb-2 text-xs text-(--text-muted)">共 {items.length} 筆結果（示範資料，非即時報價）</p>
+            <p className="mb-2 text-xs text-(--text-muted)">
+              共 {items.length} 筆結果
+              {items.length > 0 &&
+                (() => {
+                  const liveCount = items.filter((i) => !i.isMock).length;
+                  if (liveCount === items.length) return "，全部為即時資料";
+                  if (liveCount === 0) return "，目前皆為示範資料（即時資料源暫時無法連線）";
+                  return `，${liveCount} 筆即時資料、${items.length - liveCount} 筆示範資料（無法取得即時報價的股票暫以離線資料顯示，行末灰點標示）`;
+                })()}
+            </p>
             <StockTable items={items} />
           </>
         )}

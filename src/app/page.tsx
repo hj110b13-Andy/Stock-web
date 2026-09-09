@@ -13,7 +13,7 @@ export default async function HomePage() {
     searchStocks({ market: "US", sortBy: "changePercent", sortDir: "desc" }),
   ]);
 
-  const anyMock = indices.some((i) => i.isMock) || twMovers.some((i) => i.isMock);
+  const indicesAnyMock = indices.some((i) => i.isMock);
 
   return (
     <div className="space-y-10">
@@ -49,7 +49,7 @@ export default async function HomePage() {
       <section>
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-lg font-semibold">大盤指數</h2>
-          <DataBadge isMock={anyMock} />
+          <DataBadge isMock={indicesAnyMock} />
         </div>
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           {indices.map((idx) => (
@@ -58,24 +58,32 @@ export default async function HomePage() {
         </div>
       </section>
 
-      <section className="grid gap-6 lg:grid-cols-2">
-        <div className="rounded-lg border border-(--gridline) bg-(--surface-1) p-4">
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="font-semibold">台股焦點</h2>
-            <Link href="/search?market=TW" className="text-sm text-(--accent) hover:underline">
-              查看完整排行 →
-            </Link>
+      <section>
+        <p className="mb-2 text-xs text-(--text-muted)">
+          <span className="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-(--accent) align-middle" />
+          即時資料
+          <span className="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-(--text-muted) align-middle" />
+          示範資料（該股票暫時無法取得即時報價）
+        </p>
+        <div className="grid gap-6 lg:grid-cols-2">
+          <div className="rounded-lg border border-(--gridline) bg-(--surface-1) p-4">
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="font-semibold">台股焦點</h2>
+              <Link href="/search?market=TW" className="text-sm text-(--accent) hover:underline">
+                查看完整排行 →
+              </Link>
+            </div>
+            <StockTable items={twMovers.slice(0, 6)} />
           </div>
-          <StockTable items={twMovers.slice(0, 6)} />
-        </div>
-        <div className="rounded-lg border border-(--gridline) bg-(--surface-1) p-4">
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="font-semibold">美股焦點</h2>
-            <Link href="/search?market=US" className="text-sm text-(--accent) hover:underline">
-              查看完整排行 →
-            </Link>
+          <div className="rounded-lg border border-(--gridline) bg-(--surface-1) p-4">
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="font-semibold">美股焦點</h2>
+              <Link href="/search?market=US" className="text-sm text-(--accent) hover:underline">
+                查看完整排行 →
+              </Link>
+            </div>
+            <StockTable items={usMovers.slice(0, 6)} />
           </div>
-          <StockTable items={usMovers.slice(0, 6)} />
         </div>
       </section>
 

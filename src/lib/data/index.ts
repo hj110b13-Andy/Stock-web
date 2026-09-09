@@ -108,19 +108,21 @@ export async function searchStocks(filters: SearchFilters): Promise<SearchItem[]
     pool = pool.filter((e) => e.symbol.toLowerCase().includes(q) || e.name.toLowerCase().includes(q));
   }
 
-  let items: SearchItem[] = pool.map((entry) => {
-    const q = mockQuote(entry.symbol, entry.market);
-    return {
-      symbol: entry.symbol,
-      market: entry.market,
-      name: entry.name,
-      sector: entry.sector,
-      price: q.price,
-      changePercent: q.changePercent,
-      volume: q.volume,
-      isMock: true,
-    };
-  });
+  let items: SearchItem[] = await Promise.all(
+    pool.map(async (entry) => {
+      const q = await getQuote(entry.symbol, entry.market);
+      return {
+        symbol: entry.symbol,
+        market: entry.market,
+        name: entry.name,
+        sector: entry.sector,
+        price: q.price,
+        changePercent: q.changePercent,
+        volume: q.volume,
+        isMock: q.isMock,
+      };
+    })
+  );
 
   if (filters.minChangePercent !== undefined) {
     items = items.filter((i) => i.changePercent >= filters.minChangePercent!);
