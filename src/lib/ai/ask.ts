@@ -70,7 +70,7 @@ export async function answerQuestion(question: string, contextSymbol?: string): 
 
   if (!geminiKey && !anthropicKey) {
     return {
-      answer: buildCannedAnswer(grounding, groundedSymbol),
+      answer: buildCannedAnswer(grounding, groundedSymbol, "沒有偵測到 GEMINI_API_KEY 或 ANTHROPIC_API_KEY 這兩個環境變數。"),
       groundedSymbol,
       usedAi: false,
     };
@@ -88,12 +88,16 @@ export async function answerQuestion(question: string, contextSymbol?: string): 
     : `使用者問題：${question}\n（目前沒有可用的參考資料，請根據一般金融知識簡短回答，並說明無法取得即時資料。）`;
 
   // Prefer Gemini (free tier) when both keys are configured.
+  const failures: string[] = [];
+
   if (geminiKey) {
     try {
       const answer = await askGemini(system, userContent, geminiKey);
       return { answer, groundedSymbol, usedAi: true };
-    } catch {
-      // fall through to Anthropic (if configured) or the canned answer
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[ask] Gemini call failed:", message);
+      failures.push(`Gemini 呼叫失敗：${message.slice(0, 300)}`);
     }
   }
 
@@ -114,20 +118,27 @@ export async function answerQuestion(question: string, contextSymbol?: string): 
         .trim();
 
       if (answer) return { answer, groundedSymbol, usedAi: true };
-    } catch {
-      // fall through to the canned answer
+      failures.push("Claude 回傳了空白回覆");
+    } catch (err) {
+      const errMessage = err instanceof Error ? err.message : String(err);
+      console.error("[ask] Anthropic call failed:", errMessage);
+      failures.push(`Claude 呼叫失敗：${errMessage.slice(0, 300)}`);
     }
   }
 
-  return { answer: buildCannedAnswer(grounding, groundedSymbol), groundedSymbol, usedAi: false };
+  return {
+    answer: buildCannedAnswer(grounding, groundedSymbol, failures.join(" / ")),
+    groundedSymbol,
+    usedAi: false,
+  };
 }
 
-function buildCannedAnswer(grounding: string, groundedSymbol?: string): string {
+function buildCannedAnswer(grounding: string, groundedSymbol: string | undefined, reason: string): string {
   const lines = [
     groundedSymbol ? `以下是關於 ${groundedSymbol} 的目前資料：` : "以下是目前的市場資料：",
     grounding || "（目前無法取得資料，可能是網路或資料源暫時無法連線。）",
     "",
-    "提醒：AI 問答功能尚未設定 GEMINI_API_KEY 或 ANTHROPIC_API_KEY，以上僅為原始資料整理，並非 AI 生成的分析。設定金鑰後即可取得完整的 AI 問答回覆。",
+    `提醒：AI 問答目前無法產生完整回覆（原因：${reason}），以上僅為原始資料整理，並非 AI 生成的分析。`,
     "本站資訊僅供參考，不構成投資建議。",
   ];
   return lines.join("\n");

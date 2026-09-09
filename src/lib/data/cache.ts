@@ -24,7 +24,10 @@ export async function fetchWithTimeout(url: string, timeoutMs = 4000, init?: Req
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(url, { ...init, signal: controller.signal, cache: "no-store" });
-    if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`HTTP ${res.status} for ${url}${body ? `: ${body.slice(0, 500)}` : ""}`);
+    }
     return res;
   } finally {
     clearTimeout(timer);
