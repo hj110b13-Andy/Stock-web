@@ -1,13 +1,21 @@
-import { fetchWithTimeout } from "@/lib/data/cache";
+import { cached, fetchWithTimeout } from "@/lib/data/cache";
 
 // Google Gemini API (generativelanguage.googleapis.com) via plain REST call,
 // so no extra SDK dependency is needed. Free tier: apply for a key at
 // https://aistudio.google.com/apikey (no credit card required).
 //
-// Use the "-latest" alias rather than a dated snapshot (e.g. "gemini-2.5-flash")
-// so this doesn't silently break again once Google retires today's model —
-// override via GEMINI_MODEL if a specific pinned version is ever needed.
-const DEFAULT_MODEL = "gemini-flash-latest";
+// Google periodically retires model snapshots (and even "-latest" aliases),
+// so instead of hardcoding a model name here (which breaks the moment
+// Google retires it), we ask the API which models this key can actually
+// use and pick one at runtime. Cached for an hour so it isn't refetched on
+// every question.
+
+interface ModelsListResponse {
+  models?: Array<{
+    name: string; // "models/gemini-x-y"
+    supportedGenerationMethods?: string[];
+  }>;
+}
 
 interface GeminiResponse {
   candidates?: Array<{
@@ -16,27 +24,30 @@ interface GeminiResponse {
   promptFeedback?: { blockReason?: string };
 }
 
-// If the primary model has also been retired (as happened with the
-// previously-hardcoded "gemini-2.5-flash"), fall back to an older but
-// broadly-available snapshot rather than failing outright.
-const FALLBACK_MODEL = "gemini-2.0-flash";
+async function resolveModel(apiKey: string): Promise<string> {
+  return cached(`gemini:model:${apiKey.slice(-8)}`, 60 * 60_000, async () => {
+    if (process.env.GEMINI_MODEL) return process.env.GEMINI_MODEL;
 
-export async function askGemini(system: string, userContent: string, apiKey: string): Promise<string> {
-  const primary = process.env.GEMINI_MODEL || DEFAULT_MODEL;
-  const candidates = primary === FALLBACK_MODEL ? [primary] : [primary, FALLBACK_MODEL];
-
-  let lastError: unknown;
-  for (const model of candidates) {
-    try {
-      return await callGemini(model, system, userContent, apiKey);
-    } catch (err) {
-      lastError = err;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`;
+    const res = await fetchWithTimeout(url, 8000);
+    const data = (await res.json()) as ModelsListResponse;
+    const usable = (data.models ?? []).filter((m) =>
+      m.supportedGenerationMethods?.includes("generateContent")
+    );
+    if (usable.length === 0) {
+      throw new Error("這組 Gemini API 金鑰目前沒有任何可用的生成模型");
     }
-  }
-  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+
+    // Prefer a "flash" model (fast/cheap, free-tier friendly) over "pro";
+    // skip anything that looks like an embedding/vision-only variant.
+    const preferred =
+      usable.find((m) => /flash/i.test(m.name) && !/embedding|vision/i.test(m.name)) ?? usable[0];
+    return preferred.name.replace(/^models\//, "");
+  });
 }
 
-async function callGemini(model: string, system: string, userContent: string, apiKey: string): Promise<string> {
+export async function askGemini(system: string, userContent: string, apiKey: string): Promise<string> {
+  const model = await resolveModel(apiKey);
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
   const res = await fetchWithTimeout(url, 12000, {
