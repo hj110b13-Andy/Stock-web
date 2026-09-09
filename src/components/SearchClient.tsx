@@ -1,12 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
 import StockTable from "@/components/StockTable";
 import { sectorsFor, type Market, type SearchItem } from "@/lib/data";
 
-type MarketFilter = "ALL" | Market;
 type ChangePreset = "all" | "gainers" | "losers" | "big-gainers" | "big-losers";
+type SortBy = "changePercent" | "volume" | "price";
+type SortDir = "asc" | "desc";
 
 const CHANGE_PRESETS: Record<ChangePreset, { label: string; min?: number; max?: number }> = {
   all: { label: "全部" },
@@ -17,108 +17,25 @@ const CHANGE_PRESETS: Record<ChangePreset, { label: string; min?: number; max?: 
 };
 
 export default function SearchClient() {
-  const initial = useSearchParams();
-  const [market, setMarket] = useState<MarketFilter>((initial.get("market") as MarketFilter) ?? "ALL");
-  const [sector, setSector] = useState<string>("");
   const [query, setQuery] = useState("");
   const [preset, setPreset] = useState<ChangePreset>("all");
-  const [sortBy, setSortBy] = useState<"changePercent" | "volume" | "price">("changePercent");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
-  const [items, setItems] = useState<SearchItem[] | null>(null);
-
-  const sectorOptions = useMemo(() => {
-    if (market === "ALL") return [...new Set([...sectorsFor("TW"), ...sectorsFor("US")])].sort();
-    return sectorsFor(market);
-  }, [market]);
-
-  function handleMarketChange(next: MarketFilter) {
-    setMarket(next);
-    setSector("");
-  }
-
-  useEffect(() => {
-    const params = new URLSearchParams();
-    if (market !== "ALL") params.set("market", market);
-    if (sector) params.set("sector", sector);
-    if (query) params.set("q", query);
-    const cfg = CHANGE_PRESETS[preset];
-    if (cfg.min !== undefined) params.set("min", String(cfg.min));
-    if (cfg.max !== undefined) params.set("max", String(cfg.max));
-    params.set("sortBy", sortBy);
-    params.set("sortDir", sortDir);
-
-    const controller = new AbortController();
-    fetch(`/api/search?${params.toString()}`, { signal: controller.signal })
-      .then((res) => res.json())
-      .then((data) => setItems(data.items ?? []))
-      .catch(() => {});
-    return () => controller.abort();
-  }, [market, sector, query, preset, sortBy, sortDir]);
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold">搜尋 / 篩選股票</h1>
-        <p className="mt-1 text-sm text-(--text-secondary)">依市場、產業、漲跌幅快速篩選台股與美股。</p>
+        <p className="mt-1 text-sm text-(--text-secondary)">台股、美股分開顯示，各自可依產業、漲跌幅篩選與排序。</p>
       </div>
 
       <div className="rounded-lg border border-(--gridline) bg-(--surface-1) p-4 space-y-4">
         <div className="flex flex-wrap gap-4">
-          <Field label="市場">
-            <select
-              value={market}
-              onChange={(e) => handleMarketChange(e.target.value as MarketFilter)}
-              className="rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1.5 text-sm"
-            >
-              <option value="ALL">全部</option>
-              <option value="TW">台股</option>
-              <option value="US">美股</option>
-            </select>
-          </Field>
-
-          <Field label="產業">
-            <select
-              value={sector}
-              onChange={(e) => setSector(e.target.value)}
-              className="rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1.5 text-sm"
-            >
-              <option value="">全部產業</option>
-              {sectorOptions.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-          </Field>
-
-          <Field label="關鍵字">
+          <Field label="關鍵字（套用到台股與美股）">
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="代碼或名稱"
-              className="rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1.5 text-sm w-40"
+              className="rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1.5 text-sm w-56"
             />
-          </Field>
-
-          <Field label="排序">
-            <div className="flex gap-1">
-              <select
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
-                className="rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1.5 text-sm"
-              >
-                <option value="changePercent">漲跌幅</option>
-                <option value="volume">成交量</option>
-                <option value="price">股價</option>
-              </select>
-              <button
-                onClick={() => setSortDir((d) => (d === "desc" ? "asc" : "desc"))}
-                className="rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1.5 text-sm"
-                title="切換排序方向"
-              >
-                {sortDir === "desc" ? "由高到低" : "由低到高"}
-              </button>
-            </div>
           </Field>
         </div>
 
@@ -139,29 +56,107 @@ export default function SearchClient() {
         </div>
       </div>
 
-      <div className="rounded-lg border border-(--gridline) bg-(--surface-1) p-4">
-        {items === null ? (
-          <div className="space-y-2">
-            {Array.from({ length: 6 }).map((_, i) => (
-              <div key={i} className="h-8 animate-pulse rounded bg-(--page-plane)" />
-            ))}
-          </div>
-        ) : (
-          <>
-            <p className="mb-2 text-xs text-(--text-muted)">
-              共 {items.length} 筆結果
-              {items.length > 0 &&
-                (() => {
-                  const liveCount = items.filter((i) => !i.isMock).length;
-                  if (liveCount === items.length) return "，全部為即時資料";
-                  if (liveCount === 0) return "，目前皆為示範資料（即時資料源暫時無法連線）";
-                  return `，${liveCount} 筆即時資料、${items.length - liveCount} 筆示範資料（無法取得即時報價的股票暫以離線資料顯示，行末灰點標示）`;
-                })()}
-            </p>
-            <StockTable items={items} />
-          </>
-        )}
+      <div className="grid gap-6 lg:grid-cols-2">
+        <MarketSection market="TW" title="台股" anchorId="tw" query={query} preset={preset} />
+        <MarketSection market="US" title="美股" anchorId="us" query={query} preset={preset} />
       </div>
+    </div>
+  );
+}
+
+function MarketSection({
+  market,
+  title,
+  anchorId,
+  query,
+  preset,
+}: {
+  market: Market;
+  title: string;
+  anchorId: string;
+  query: string;
+  preset: ChangePreset;
+}) {
+  const [sector, setSector] = useState("");
+  const [sortBy, setSortBy] = useState<SortBy>("changePercent");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [items, setItems] = useState<SearchItem[] | null>(null);
+
+  const sectorOptions = useMemo(() => sectorsFor(market), [market]);
+
+  useEffect(() => {
+    const params = new URLSearchParams({ market, sortBy, sortDir });
+    if (sector) params.set("sector", sector);
+    if (query) params.set("q", query);
+    const cfg = CHANGE_PRESETS[preset];
+    if (cfg.min !== undefined) params.set("min", String(cfg.min));
+    if (cfg.max !== undefined) params.set("max", String(cfg.max));
+
+    const controller = new AbortController();
+    fetch(`/api/search?${params.toString()}`, { signal: controller.signal })
+      .then((res) => res.json())
+      .then((data) => setItems(data.items ?? []))
+      .catch(() => {});
+    return () => controller.abort();
+  }, [market, sector, query, preset, sortBy, sortDir]);
+
+  return (
+    <div id={anchorId} className="scroll-mt-20 rounded-lg border border-(--gridline) bg-(--surface-1) p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <h2 className="font-semibold">{title}</h2>
+        <div className="flex gap-2">
+          <select
+            value={sector}
+            onChange={(e) => setSector(e.target.value)}
+            className="rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1 text-xs"
+          >
+            <option value="">全部產業</option>
+            {sectorOptions.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as SortBy)}
+            className="rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1 text-xs"
+          >
+            <option value="changePercent">漲跌幅</option>
+            <option value="volume">成交量</option>
+            <option value="price">股價</option>
+          </select>
+          <button
+            onClick={() => setSortDir((d) => (d === "desc" ? "asc" : "desc"))}
+            className="rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1 text-xs"
+            title="切換排序方向"
+          >
+            {sortDir === "desc" ? "高→低" : "低→高"}
+          </button>
+        </div>
+      </div>
+
+      {items === null ? (
+        <div className="space-y-2">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="h-8 animate-pulse rounded bg-(--page-plane)" />
+          ))}
+        </div>
+      ) : (
+        <>
+          <p className="text-xs text-(--text-muted)">
+            共 {items.length} 筆
+            {items.length > 0 &&
+              (() => {
+                const liveCount = items.filter((i) => !i.isMock).length;
+                if (liveCount === items.length) return "，全部為即時資料";
+                if (liveCount === 0) return "，目前皆為示範資料（即時資料源暫時無法連線）";
+                return `，${liveCount} 筆即時、${items.length - liveCount} 筆示範（行末灰點標示）`;
+              })()}
+          </p>
+          <StockTable items={items} />
+        </>
+      )}
     </div>
   );
 }

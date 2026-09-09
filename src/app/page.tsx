@@ -69,7 +69,7 @@ export default async function HomePage() {
           <div className="rounded-lg border border-(--gridline) bg-(--surface-1) p-4">
             <div className="flex items-center justify-between mb-2">
               <h2 className="font-semibold">台股焦點</h2>
-              <Link href="/search?market=TW" className="text-sm text-(--accent) hover:underline">
+              <Link href="/search#tw" className="text-sm text-(--accent) hover:underline">
                 查看完整排行 →
               </Link>
             </div>
@@ -78,7 +78,7 @@ export default async function HomePage() {
           <div className="rounded-lg border border-(--gridline) bg-(--surface-1) p-4">
             <div className="flex items-center justify-between mb-2">
               <h2 className="font-semibold">美股焦點</h2>
-              <Link href="/search?market=US" className="text-sm text-(--accent) hover:underline">
+              <Link href="/search#us" className="text-sm text-(--accent) hover:underline">
                 查看完整排行 →
               </Link>
             </div>
