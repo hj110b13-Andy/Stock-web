@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import StockTable from "@/components/StockTable";
+import MarketTabs from "@/components/MarketTabs";
 import { sectorsFor, type Market, type SearchItem } from "@/lib/data";
 
 type ChangePreset = "all" | "gainers" | "losers" | "big-gainers" | "big-losers";
@@ -56,24 +57,20 @@ export default function SearchClient() {
         </div>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <MarketSection market="TW" title="台股" anchorId="tw" query={query} preset={preset} />
-        <MarketSection market="US" title="美股" anchorId="us" query={query} preset={preset} />
-      </div>
+      <MarketTabs
+        tw={<MarketSection market="TW" query={query} preset={preset} />}
+        us={<MarketSection market="US" query={query} preset={preset} />}
+      />
     </div>
   );
 }
 
 function MarketSection({
   market,
-  title,
-  anchorId,
   query,
   preset,
 }: {
   market: Market;
-  title: string;
-  anchorId: string;
   query: string;
   preset: ChangePreset;
 }) {
@@ -101,9 +98,8 @@ function MarketSection({
   }, [market, sector, query, preset, sortBy, sortDir]);
 
   return (
-    <div id={anchorId} className="scroll-mt-20 rounded-lg border border-(--gridline) bg-(--surface-1) p-4 space-y-3">
-      <div className="flex items-center justify-between">
-        <h2 className="font-semibold">{title}</h2>
+    <div className="rounded-lg border border-(--gridline) bg-(--surface-1) p-4 space-y-3">
+      <div className="flex items-center justify-end">
         <div className="flex gap-2">
           <select
             value={sector}

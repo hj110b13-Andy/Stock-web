@@ -2,6 +2,7 @@ import Link from "next/link";
 import IndexCard from "@/components/IndexCard";
 import StockTable from "@/components/StockTable";
 import DataBadge from "@/components/DataBadge";
+import MarketTabs from "@/components/MarketTabs";
 import WatchlistSection from "@/components/WatchlistSection";
 import DailyBriefCard from "@/components/DailyBriefCard";
 import { getIndices, searchStocks } from "@/lib/data";
@@ -17,7 +18,8 @@ export default async function HomePage() {
     getDailyBrief(),
   ]);
 
-  const indicesAnyMock = indices.some((i) => i.isMock);
+  const twIndices = indices.filter((i) => i.market === "TW");
+  const usIndices = indices.filter((i) => i.market === "US");
 
   return (
     <div className="space-y-10">
@@ -61,15 +63,11 @@ export default async function HomePage() {
       <WatchlistSection />
 
       <section>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-lg font-semibold">大盤指數</h2>
-          <DataBadge isMock={indicesAnyMock} />
-        </div>
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          {indices.map((idx) => (
-            <IndexCard key={idx.symbol} index={idx} />
-          ))}
-        </div>
+        <h2 className="mb-3 text-lg font-semibold">大盤指數</h2>
+        <MarketTabs
+          tw={<IndexGroup indices={twIndices} />}
+          us={<IndexGroup indices={usIndices} />}
+        />
       </section>
 
       <section>
@@ -79,25 +77,17 @@ export default async function HomePage() {
           <span className="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-(--text-muted) align-middle" />
           示範資料（該股票暫時無法取得即時報價）
         </p>
-        <div className="grid gap-6 lg:grid-cols-2">
-          <div className="rounded-lg border border-(--gridline) bg-(--surface-1) p-4">
-            <div className="flex items-center justify-between mb-2">
-              <h2 className="font-semibold">台股焦點</h2>
-              <Link href="/search#tw" className="text-sm text-(--accent) hover:underline">
-                查看完整排行 →
-              </Link>
-            </div>
-            <StockTable items={twMovers.slice(0, 6)} />
+        <div className="rounded-lg border border-(--gridline) bg-(--surface-1) p-4">
+          <div className="flex items-center justify-between mb-1">
+            <h2 className="font-semibold">焦點排行</h2>
+            <Link href="/search" className="text-sm text-(--accent) hover:underline">
+              查看完整排行 →
+            </Link>
           </div>
-          <div className="rounded-lg border border-(--gridline) bg-(--surface-1) p-4">
-            <div className="flex items-center justify-between mb-2">
-              <h2 className="font-semibold">美股焦點</h2>
-              <Link href="/search#us" className="text-sm text-(--accent) hover:underline">
-                查看完整排行 →
-              </Link>
-            </div>
-            <StockTable items={usMovers.slice(0, 6)} />
-          </div>
+          <MarketTabs
+            tw={<StockTable items={twMovers.slice(0, 8)} />}
+            us={<StockTable items={usMovers.slice(0, 8)} />}
+          />
         </div>
       </section>
 
@@ -107,6 +97,22 @@ export default async function HomePage() {
           點右下角的 AI 問答，直接用中文問「2330 最近走勢如何？」或「AAPL 現在多少錢？」
         </p>
       </section>
+    </div>
+  );
+}
+
+function IndexGroup({ indices }: { indices: Awaited<ReturnType<typeof getIndices>> }) {
+  const anyMock = indices.some((i) => i.isMock);
+  return (
+    <div>
+      <div className="mb-2 flex justify-end">
+        <DataBadge isMock={anyMock} />
+      </div>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        {indices.map((idx) => (
+          <IndexCard key={idx.symbol} index={idx} />
+        ))}
+      </div>
     </div>
   );
 }

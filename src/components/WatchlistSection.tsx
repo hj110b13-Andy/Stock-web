@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useSyncExternalStore } from "react";
 import StockTable from "@/components/StockTable";
+import MarketTabs from "@/components/MarketTabs";
 import type { Quote, SearchItem } from "@/lib/data";
 import { WATCHLIST_CHANGED_EVENT, getWatchlist, type WatchlistItem } from "@/lib/watchlist";
 
@@ -67,7 +68,10 @@ export default function WatchlistSection() {
           ))}
         </div>
       ) : (
-        <StockTable items={displayItems} />
+        <MarketTabs
+          tw={<StockTable items={displayItems.filter((i) => i.market === "TW")} emptyLabel="尚未關注任何台股" />}
+          us={<StockTable items={displayItems.filter((i) => i.market === "US")} emptyLabel="尚未關注任何美股" />}
+        />
       )}
     </section>
   );
