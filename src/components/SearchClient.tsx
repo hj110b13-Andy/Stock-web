@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import StockTable from "@/components/StockTable";
 import MarketTabs from "@/components/MarketTabs";
-import { sectorsFor, type Market, type SearchItem } from "@/lib/data";
+import type { Market, SearchItem } from "@/lib/data";
 
 type ChangePreset = "all" | "gainers" | "losers" | "big-gainers" | "big-losers";
 type SortBy = "changePercent" | "volume" | "price";
@@ -80,8 +80,20 @@ function MarketSection({
   const [sortBy, setSortBy] = useState<SortBy>("changePercent");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [items, setItems] = useState<SearchItem[] | null>(null);
+  const [sectorOptions, setSectorOptions] = useState<string[]>([]);
 
-  const sectorOptions = useMemo(() => sectorsFor(market), [market]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/sectors?market=${market}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (!cancelled) setSectorOptions(data.sectors ?? []);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [market]);
 
   useEffect(() => {
     const params = new URLSearchParams({ market, sortBy, sortDir });

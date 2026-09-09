@@ -10,7 +10,7 @@
 - **個股頁** `/stock/[symbol]`：即時（或近即時）報價、基本面（本益比/殖利率/市值）、K 線圖 + 成交量（1個月/3個月/6個月/1年，滑鼠 hover 顯示當日開高低收與成交量）、客觀技術訊號標籤（爆量、創新高/新低、均線、連漲跌天數）、關注清單星號。
 - **搜尋 / 篩選** `/search`：台股、美股用分頁切換（不並排），各自可依產業（多選）、股價區間、漲跌幅篩選與排序。
 - **每日焦點榜單** `/highlights`：漲幅榜／跌幅榜／成交量榜／技術訊號共振股，台股、美股分開排名，用分頁切換。
-- **我的關注**：用瀏覽器 localStorage 儲存自選股清單，不需登入，首頁與個股頁可加入/移除、排序、匯出 CSV。
+- **我的關注**：預設用瀏覽器 localStorage 儲存自選股清單，不需登入，首頁與個股頁可加入/移除、排序、匯出 CSV；設定 Google 登入後，登入即可跨裝置同步同一份清單（見下方「帳號登入」）。
 - **AI 問答**：右下角浮動聊天視窗，支援多輪對話記憶，可針對目前瀏覽的個股或任何代碼提問，回答會同時參考個股資料與台股＋美股大盤概況。
 - **深色模式**：右上角手動切換開關，選擇會記住在瀏覽器；未手動選擇時跟隨系統設定。
 
@@ -56,7 +56,32 @@ GEMINI_API_KEY=xxxx
 `vercel.json` 設定了一個每天 UTC 00:50（台北時間 08:50）觸發 `/api/cron/daily-brief` 的排程，會在當天第一位訪客之前預先生成好快報。快報本身以「台北時間的日期」當快取 key，同一天內所有訪客看到同一份內容。
 
 - 可選環境變數 `CRON_SECRET`：設定後，cron 路由只接受帶正確 `Authorization: Bearer <secret>` 的請求（Vercel 觸發排程時會自動附上，符合 [Vercel 官方作法](https://vercel.com/docs/cron-jobs/manage-cron-jobs#securing-cron-jobs)）；不設定則路由不做驗證，任何人手動打這支 API 只會是提早重新生成快報，沒有安全疑慮。
-- **已知限制**：快取是 `lib/data/cache.ts` 裡的記憶體內 Map，屬於單一 Serverless 執行個體，不是跨個體共享的儲存。Cron 只能預熱「處理到這次排程的那個執行個體」，不保證每個訪客連到的執行個體都已經有快取——效果是大幅降低 AI 呼叫次數，但不是嚴格保證「一天只生成一次」。正式產品應改用 Redis / Vercel KV 等共享儲存。
+- **已知限制**：若未設定下方「共用快取」，快取預設是 `lib/data/cache.ts` 裡的記憶體內 Map，屬於單一 Serverless 執行個體，不是跨個體共享的儲存。Cron 只能預熱「處理到這次排程的那個執行個體」，不保證每個訪客連到的執行個體都已經有快取——效果是大幅降低 AI 呼叫次數，但不是嚴格保證「一天只生成一次」。設定共用快取後這個限制就解除了。
+
+### 共用快取（Redis，選用）
+
+預設情況下（不設定任何環境變數）快取存在每個 Serverless 執行個體自己的記憶體裡，同一份資料可能在不同執行個體被重複抓取。設定 Redis 後，`lib/data/cache.ts` 的 `cached()` 會自動改用共用的 Redis 儲存（`lib/data/kv.ts`），所有執行個體、所有訪客共用同一份快取——不用改任何程式碼，設定好環境變數即生效；沒設定的話會自動退回原本的記憶體內快取，網站行為完全不受影響。
+
+任一種都可以（擇一設定）：
+
+| 方式 | 環境變數 |
+|---|---|
+| Vercel Marketplace「Redis」整合（Project → Storage → 新增 Redis，通常會自動填好） | `KV_REST_API_URL`、`KV_REST_API_TOKEN` |
+| 直接連接 Upstash Redis（[upstash.com](https://upstash.com) 免費額度即可） | `UPSTASH_REDIS_REST_URL`、`UPSTASH_REDIS_REST_TOKEN` |
+
+任何一個 Redis 讀寫失敗都會自動退回即時重新抓資料，不會讓頁面壞掉。
+
+## 帳號登入（選用，Google 一鍵登入）
+
+預設不需要登入即可使用全部功能（自選股存在瀏覽器 localStorage）。設定好下面三個環境變數後，右上角會出現「使用 Google 登入」按鈕，登入後自選股會同步到帳號，換裝置/換瀏覽器登入同一個 Google 帳號就能看到同一份清單。三個變數只要有一個沒設定，登入按鈕就不會顯示，網站其餘功能完全不受影響。
+
+1. 到 [Google Cloud Console → API 憑證](https://console.cloud.google.com/apis/credentials) 建立一組 **OAuth 用戶端 ID**（應用程式類型選「網頁應用程式」），「已授權的重新導向 URI」填：
+   - 正式站：`https://你的網域/api/auth/callback/google`
+   - 本機開發：`http://localhost:3000/api/auth/callback/google`
+2. 把取得的用戶端 ID / 密碼填進環境變數：`AUTH_GOOGLE_ID`、`AUTH_GOOGLE_SECRET`
+3. `AUTH_SECRET`：任意隨機字串（可用 `npx auth secret` 產生），用來加密登入 session
+
+**跨裝置同步需要「共用快取」章節提到的 Redis** 來存放每個帳號的自選股清單；只設定登入、沒設定 Redis 的話，登入功能本身仍然正常（可以登入/登出、看到自己的 Google 頭像），但自選股不會真的跨裝置同步，會退回該裝置的 localStorage（`/api/watchlist` 會回報 `syncAvailable: false`）。首次登入時，會把「這台裝置當下的本機清單」與「帳號裡已同步的清單」取聯集合併（不會互相覆蓋刪除），之後每次加入/移除都會即時推上雲端。
 
 ## 開發
 
@@ -85,16 +110,23 @@ src/
       quote/[symbol]/      即時報價 API
       chart/[symbol]/      歷史 K 線 API
       search/               篩選 API
+      sectors/               搜尋頁產業選單 API
       indices/              大盤指數 API
       ask/                  AI 問答 API（支援多輪對話）
+      watchlist/             登入後自選股同步 API（GET/PUT）
+      auth/[...nextauth]/    NextAuth（Google 登入）路由
       cron/daily-brief/     每日快報排程觸發端點
-  components/               UI 元件（StockChart、ChatWidget、MarketTabs 等）
+    sitemap.ts / robots.ts   SEO：sitemap.xml / robots.txt
+  components/               UI 元件（StockChart、ChatWidget、MarketTabs、AuthButton 等）
   lib/
-    data/                   資料層：TWSE / Yahoo 抓取器（含批次查詢）、快取、統一介面（抓不到資料一律回傳 null，不產生假資料）
+    data/                   資料層：TWSE / Yahoo 抓取器（含批次查詢）、universe.ts（股票清單）、kv.ts（選用 Redis 共用快取）、統一介面（抓不到資料一律回傳 null，不產生假資料）
     ai/                     AI 問答邏輯 + 每日快報生成（provider.ts 共用 Gemini/Claude fallback）
+    auth.ts                  NextAuth 設定（Google 登入）
+    watchlist.ts              自選股清單（localStorage，未登入或未設定共用儲存時的預設行為）
+    watchlistStore.ts         登入後自選股的伺服器端（Redis）儲存
     signals.ts               客觀技術訊號計算（爆量、均線、連漲跌等）
-    watchlist.ts              自選股清單（localStorage）
     format.ts                數字／價格格式化，含台股慣例（紅漲綠跌）
+    site.ts                  網站名稱／網址常數（SEO metadata 用）
 ```
 
 ## 設計慣例

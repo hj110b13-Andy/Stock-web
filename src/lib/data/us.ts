@@ -1,4 +1,4 @@
-import { fetchWithTimeout } from "./cache";
+import { chunk, fetchWithTimeout } from "./cache";
 import type { Candle, ChartRange, Fundamentals, Quote } from "./types";
 import { findInUniverse } from "./universe";
 
@@ -106,24 +106,37 @@ interface YahooQuoteResponse {
  * pages (search/highlights/homepage movers) were each calling
  * fetchUsQuote() per stock, i.e. one chart-endpoint request per symbol;
  * this is far fewer round trips and much less likely to partially fail
- * under concurrent load.
+ * under concurrent load. Chunked the same way as the TWSE batch fetch so
+ * a larger universe doesn't build one oversized query string.
  */
+const QUOTE_BATCH_CHUNK_SIZE = 150;
+
 export async function fetchUsQuotesBatch(symbols: string[]): Promise<Map<string, Quote>> {
   const map = new Map<string, Quote>();
   if (symbols.length === 0) return map;
 
-  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols
-    .map((s) => encodeURIComponent(s))
-    .join(",")}`;
-  const res = await fetchWithTimeout(url, 6000, {
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-      Accept: "application/json",
-    },
-  });
-  const data = (await res.json()) as YahooQuoteResponse;
-  for (const r of data.quoteResponse?.result ?? []) {
+  const chunks = chunk(symbols, QUOTE_BATCH_CHUNK_SIZE);
+  const results = await Promise.all(
+    chunks.map(async (group) => {
+      const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${group
+        .map((s) => encodeURIComponent(s))
+        .join(",")}`;
+      try {
+        const res = await fetchWithTimeout(url, 6000, {
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+            Accept: "application/json",
+          },
+        });
+        const data = (await res.json()) as YahooQuoteResponse;
+        return data.quoteResponse?.result ?? [];
+      } catch {
+        return [];
+      }
+    })
+  );
+  for (const r of results.flat()) {
     const prevClose = r.regularMarketPreviousClose ?? r.regularMarketPrice;
     const change = r.regularMarketPrice - prevClose;
     const known = findInUniverse(r.symbol, "US");

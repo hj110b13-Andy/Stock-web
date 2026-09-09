@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import type { Metadata } from "next";
 import StockChart from "@/components/StockChart";
 import AskAboutButton from "@/components/AskAboutButton";
 import WatchlistButton from "@/components/WatchlistButton";
@@ -12,6 +13,37 @@ export const revalidate = 0;
 interface PageProps {
   params: Promise<{ symbol: string }>;
   searchParams: Promise<{ market?: string }>;
+}
+
+export async function generateMetadata({ params, searchParams }: PageProps): Promise<Metadata> {
+  const { symbol } = await params;
+  const { market } = await searchParams;
+  const marketHint = market === "TW" || market === "US" ? (market as Market) : undefined;
+  const resolvedSymbol = normalizeSymbol(symbol);
+  const resolvedMarket = marketHint ?? detectMarket(resolvedSymbol);
+  const marketLabel = resolvedMarket === "TW" ? "台股" : "美股";
+
+  const quote = await getQuote(symbol, marketHint);
+  if (!quote) {
+    return {
+      title: `${resolvedSymbol}（${marketLabel}）`,
+      description: `查詢 ${resolvedSymbol}（${marketLabel}）即時報價、K 線圖與技術訊號。`,
+      alternates: { canonical: `/stock/${resolvedSymbol}?market=${resolvedMarket}` },
+    };
+  }
+
+  const title = `${quote.name}（${quote.symbol}）${marketLabel}即時報價`;
+  const description = `${quote.name}（${quote.symbol}）${marketLabel}目前 ${formatPrice(quote.price, quote.currency)} ${quote.currency}，${
+    quote.change >= 0 ? "上漲" : "下跌"
+  } ${formatPercent(quote.changePercent)}。查看即時報價、K 線圖、成交量與客觀技術訊號。`;
+
+  return {
+    title,
+    description,
+    alternates: { canonical: `/stock/${quote.symbol}?market=${quote.market}` },
+    openGraph: { title, description },
+    twitter: { title, description },
+  };
 }
 
 export default async function StockDetailPage({ params, searchParams }: PageProps) {

@@ -4,8 +4,9 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import ThemeToggle from "./ThemeToggle";
+import AuthButton from "./AuthButton";
 
-export default function SiteHeader() {
+export default function SiteHeader({ authEnabled }: { authEnabled: boolean }) {
   const router = useRouter();
   const [query, setQuery] = useState("");
 
@@ -47,6 +48,7 @@ export default function SiteHeader() {
             className="w-full rounded-md border border-(--gridline) bg-(--surface-2) px-3 py-2 text-sm placeholder:text-(--text-muted) focus:outline-none focus:ring-2 focus:ring-(--accent)"
           />
         </form>
+        {authEnabled && <AuthButton />}
         <ThemeToggle />
       </div>
       <nav className="flex sm:hidden items-center gap-1 px-4 pb-2 text-sm">

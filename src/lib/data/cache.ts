@@ -1,22 +1,64 @@
+import { kvEnabled, redis } from "./kv";
+
 interface CacheEntry<T> {
   value: T;
   expiresAt: number;
 }
 
-// Process-local TTL cache. Good enough for a demo / single dev server;
-// a real deployment on serverless functions should swap this for Redis
-// or similar shared cache so TTLs hold across instances.
-const store = new Map<string, CacheEntry<unknown>>();
+// Process-local TTL cache — the fallback used whenever Redis (see ./kv)
+// isn't configured, and also what a single request falls back to if a
+// configured Redis is temporarily unreachable. Not shared across Vercel's
+// serverless instances, but keeps the app fully functional without any
+// external service.
+const memoryStore = new Map<string, CacheEntry<unknown>>();
 
-export async function cached<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
-  const hit = store.get(key);
+function cachedInMemory<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
+  const hit = memoryStore.get(key);
   const now = Date.now();
   if (hit && hit.expiresAt > now) {
-    return hit.value as T;
+    return Promise.resolve(hit.value as T);
   }
+  return load().then((value) => {
+    memoryStore.set(key, { value, expiresAt: now + ttlMs });
+    return value;
+  });
+}
+
+/**
+ * TTL cache shared across serverless instances via Redis when configured
+ * (see ./kv), otherwise a per-instance in-memory Map. Either backend fails
+ * open: a Redis read/write error falls through to recomputing the value via
+ * `load()` rather than surfacing an error, since a cache is never allowed
+ * to be the reason a page breaks.
+ */
+export async function cached<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
+  if (!kvEnabled || !redis) {
+    return cachedInMemory(key, ttlMs, load);
+  }
+
+  try {
+    const hit = await redis.get<T>(key);
+    if (hit !== null && hit !== undefined) return hit;
+  } catch {
+    // Redis unreachable; fall through to computing a fresh value below
+  }
+
   const value = await load();
-  store.set(key, { value, expiresAt: now + ttlMs });
+  try {
+    await redis.set(key, value, { ex: Math.max(1, Math.round(ttlMs / 1000)) });
+  } catch {
+    // best-effort; a shared-cache write failure shouldn't break the response
+  }
   return value;
+}
+
+/** Splits an array into fixed-size groups — used to keep batch-quote request
+ * URLs/payloads a safe size once the stock universe grew well past a
+ * couple dozen symbols. */
+export function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
 }
 
 export async function fetchWithTimeout(url: string, timeoutMs = 4000, init?: RequestInit): Promise<Response> {

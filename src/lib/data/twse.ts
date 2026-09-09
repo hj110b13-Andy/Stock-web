@@ -1,6 +1,6 @@
-import { fetchWithTimeout } from "./cache";
+import { chunk, fetchWithTimeout } from "./cache";
 import type { Candle, ChartRange, Fundamentals, Quote } from "./types";
-import { findInUniverse } from "./universe";
+import { findInUniverse, type UniverseEntry } from "./universe";
 
 // TWSE (Taiwan Stock Exchange) public data endpoints. No API key required.
 // - Real-time-ish quote (delayed): mis.twse.com.tw "getStockInfo"
@@ -66,18 +66,35 @@ export async function fetchTwseQuote(stockNo: string): Promise<Quote> {
  * endpoint meant for single-stock lookups, which tends to get rate-limited
  * or time out under that load and silently fall back to mock data for the
  * whole list. One batched request is far more likely to actually succeed.
+ *
+ * Now that the universe can run into the hundreds of stocks (see
+ * getTwUniverse in ./universe), a single request would build an
+ * enormous query string, so the symbol list is chunked into a handful of
+ * parallel requests instead of one unbounded one.
  */
+const QUOTE_BATCH_CHUNK_SIZE = 150;
+
 export async function fetchTwseQuotesBatch(stockNos: string[]): Promise<Map<string, Quote>> {
   const map = new Map<string, Quote>();
   if (stockNos.length === 0) return map;
 
-  const chExpr = stockNos.map((s) => `tse_${s}.tw`).join("|");
-  const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${chExpr}&json=1&delay=0`;
-  const res = await fetchWithTimeout(url, 6000, {
-    headers: { Referer: "https://mis.twse.com.tw/stock/index.jsp" },
-  });
-  const data = (await res.json()) as { msgArray?: MisRow[] };
-  for (const row of data.msgArray ?? []) {
+  const chunks = chunk(stockNos, QUOTE_BATCH_CHUNK_SIZE);
+  const results = await Promise.all(
+    chunks.map(async (group) => {
+      const chExpr = group.map((s) => `tse_${s}.tw`).join("|");
+      const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${chExpr}&json=1&delay=0`;
+      try {
+        const res = await fetchWithTimeout(url, 6000, {
+          headers: { Referer: "https://mis.twse.com.tw/stock/index.jsp" },
+        });
+        const data = (await res.json()) as { msgArray?: MisRow[] };
+        return data.msgArray ?? [];
+      } catch {
+        return [];
+      }
+    })
+  );
+  for (const row of results.flat()) {
     map.set(row.c, rowToQuote(row));
   }
   return map;
@@ -153,6 +170,34 @@ export async function fetchTwseFundamentalsAll(): Promise<Map<string, Fundamenta
     });
   }
   return map;
+}
+
+interface CompanyRow {
+  公司代號: string;
+  公司簡稱: string;
+  產業別: string;
+}
+
+/**
+ * TWSE's official open-data endpoint for every listed (上市) company's
+ * basic profile — code, short name, industry category. Used to build the
+ * full TW stock universe instead of a small hand-curated list (see
+ * getTwUniverse in ./universe). Real official metadata; a company missing
+ * here just won't appear in search/rankings, it never gets a made-up entry.
+ */
+export async function fetchTwseListedCompanies(): Promise<UniverseEntry[]> {
+  const url = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L";
+  const res = await fetchWithTimeout(url, 8000);
+  const rows = (await res.json()) as CompanyRow[];
+  return rows
+    .filter((r) => r.公司代號 && r.公司簡稱)
+    .map((r) => ({
+      symbol: r.公司代號.trim(),
+      market: "TW" as const,
+      name: r.公司簡稱.trim(),
+      sector: r.產業別?.trim() || "未分類",
+      currency: "TWD",
+    }));
 }
 
 function rocToIso(roc: string): string {

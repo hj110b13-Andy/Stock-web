@@ -66,3 +66,8 @@ export function toggleWatch(item: WatchlistItem): boolean {
   save(list);
   return true;
 }
+
+/** Overwrites the whole list — used when merging in a signed-in account's server-side watchlist. */
+export function replaceWatchlist(items: WatchlistItem[]) {
+  save(items);
+}

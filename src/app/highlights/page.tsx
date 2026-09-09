@@ -1,9 +1,16 @@
+import type { Metadata } from "next";
 import StockTable from "@/components/StockTable";
 import MarketTabs from "@/components/MarketTabs";
 import MomentumTable from "@/components/MomentumTable";
 import { searchStocks, getMultiSignalStocks } from "@/lib/data";
 
 export const revalidate = 0;
+
+export const metadata: Metadata = {
+  title: "每日焦點榜單",
+  description: "台股與美股的漲幅榜、跌幅榜、成交量榜與技術訊號共振股，分市場排名，快速掌握市場焦點。",
+  alternates: { canonical: "/highlights" },
+};
 
 export default async function HighlightsPage() {
   const [twGainers, usGainers, twLosers, usLosers, twVolume, usVolume, twMomentum, usMomentum] = await Promise.all([

@@ -1,12 +1,16 @@
 import { cached } from "./cache";
 import type { ChartRange, ChartResponse, Fundamentals, IndexQuote, Market, Quote, SearchItem } from "./types";
-import { TW_UNIVERSE, US_UNIVERSE, findInUniverse, UniverseEntry } from "./universe";
+import { US_UNIVERSE, findInUniverse, getTwUniverse, UniverseEntry } from "./universe";
 import { fetchTwseCandles, fetchTwseFundamentalsAll, fetchTwseQuote, fetchTwseQuotesBatch } from "./twse";
 import { fetchUsCandles, fetchUsFundamentals, fetchUsQuote, fetchUsQuotesBatch } from "./us";
 import { computeSignals, type Signal } from "@/lib/signals";
 
 export * from "./types";
-export { sectorsFor } from "./universe";
+export { sectorsFor, getTwUniverse } from "./universe";
+
+async function universeFor(market: Market): Promise<UniverseEntry[]> {
+  return market === "TW" ? getTwUniverse() : US_UNIVERSE;
+}
 
 export function detectMarket(symbolInput: string): Market {
   const known = findInUniverse(symbolInput);
@@ -119,7 +123,7 @@ export async function getIndices(): Promise<IndexQuote[]> {
  * are simply absent from the map — never filled in with a guess.
  */
 async function fetchMarketQuoteMap(market: Market): Promise<Map<string, Quote>> {
-  const pool = market === "TW" ? TW_UNIVERSE : US_UNIVERSE;
+  const pool = await universeFor(market);
   const map = new Map<string, Quote>();
 
   try {
@@ -173,8 +177,9 @@ export interface SearchFilters {
 
 /** Stocks with no live quote available are excluded, never shown with a placeholder price. */
 export async function searchStocks(filters: SearchFilters): Promise<SearchItem[]> {
-  let pool: UniverseEntry[] = [...TW_UNIVERSE, ...US_UNIVERSE];
-  if (filters.market) pool = pool.filter((e) => e.market === filters.market);
+  let pool: UniverseEntry[] = filters.market
+    ? await universeFor(filters.market)
+    : [...(await getTwUniverse()), ...US_UNIVERSE];
   if (filters.sector) pool = pool.filter((e) => e.sector === filters.sector);
   if (filters.sectors && filters.sectors.length > 0) {
     const wanted = new Set(filters.sectors);
@@ -236,6 +241,12 @@ export interface MomentumItem extends SearchItem {
 }
 
 const MOMENTUM_TTL_MS = 5 * 60_000;
+// Computing a signal requires a chart fetch per candidate stock, so the
+// candidate pool is capped to the biggest movers by |change%| before doing
+// that work — with a several-hundred-stock TW universe, running the chart
+// fetch for every single one would mean hundreds of concurrent requests to
+// TWSE for a board that only ever displays the top ~10 results anyway.
+const MOMENTUM_CANDIDATE_LIMIT = 150;
 
 /**
  * Stocks where 2+ objective technical signals (see lib/signals.ts) are
@@ -247,13 +258,17 @@ const MOMENTUM_TTL_MS = 5 * 60_000;
  */
 export async function getMultiSignalStocks(market: Market, minSignals = 2): Promise<MomentumItem[]> {
   return cached(`momentum:${market}:${minSignals}`, MOMENTUM_TTL_MS, async () => {
-    const pool = market === "TW" ? TW_UNIVERSE : US_UNIVERSE;
+    const pool = await universeFor(market);
     const quoteMap = await getMarketQuoteMap(market);
 
+    const candidates = pool
+      .filter((entry) => quoteMap.has(entry.symbol))
+      .sort((a, b) => Math.abs(quoteMap.get(b.symbol)!.changePercent) - Math.abs(quoteMap.get(a.symbol)!.changePercent))
+      .slice(0, MOMENTUM_CANDIDATE_LIMIT);
+
     const results = await Promise.all(
-      pool.map(async (entry): Promise<MomentumItem | null> => {
-        const quote = quoteMap.get(entry.symbol);
-        if (!quote) return null;
+      candidates.map(async (entry): Promise<MomentumItem | null> => {
+        const quote = quoteMap.get(entry.symbol)!;
         const chart = await getChart(entry.symbol, "3m", entry.market);
         if (!chart) return null;
         const signals = computeSignals(chart.candles, quote.price, "3m");
