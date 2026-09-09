@@ -58,7 +58,7 @@ export default async function StockDetailPage({ params, searchParams }: PageProp
           <Stat label="最高" value={formatPrice(quote.high, quote.currency)} valueClass="text-(--price-up)" />
           <Stat label="最低" value={formatPrice(quote.low, quote.currency)} valueClass="text-(--price-down)" />
           <Stat label="昨收" value={formatPrice(quote.prevClose, quote.currency)} />
-          <Stat label="成交量" value={formatVolume(quote.volume)} />
+          <Stat label="成交量" value={formatVolume(quote.volume, quote.market)} />
         </dl>
       </section>
 

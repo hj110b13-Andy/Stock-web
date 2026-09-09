@@ -49,7 +49,7 @@ export default function StockTable({ items, emptyLabel }: { items: SearchItem[];
               <td className={`py-2.5 pr-4 text-right font-medium tabular-nums ${priceDirectionClass(item.changePercent)}`}>
                 {formatPercent(item.changePercent)}
               </td>
-              <td className="py-2.5 pr-4 text-right tabular-nums text-(--text-secondary)">{formatVolume(item.volume)}</td>
+              <td className="py-2.5 pr-4 text-right tabular-nums text-(--text-secondary)">{formatVolume(item.volume, item.market)}</td>
             </tr>
           ))}
         </tbody>

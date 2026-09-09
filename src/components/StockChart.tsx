@@ -137,7 +137,7 @@ export default function StockChart({
           <span style="color:${textMuted}">高</span><span style="color:${priceUp}">${formatPrice(candle.high, currency)}</span>
           <span style="color:${textMuted}">低</span><span style="color:${priceDown}">${formatPrice(candle.low, currency)}</span>
           <span style="color:${textMuted}">收</span><span style="color:${dirColor};font-weight:600">${formatPrice(candle.close, currency)}</span>
-          <span style="color:${textMuted}">量</span><span>${formatVolume(candle.volume)}</span>
+          <span style="color:${textMuted}">量</span><span>${formatVolume(candle.volume, market)}</span>
         </div>
       `;
       tooltip.style.opacity = "1";

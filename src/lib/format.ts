@@ -13,7 +13,19 @@ export function formatChange(value: number, currency: string): string {
   return `${sign}${formatPrice(value, currency)}`;
 }
 
-export function formatVolume(value: number): string {
+/**
+ * `value` is always raw shares internally (see lib/data/twse.ts — MIS's 張
+ * count is converted to shares so it matches the historical-chart volume
+ * unit). Taiwan investors read 成交量 as a plain 張 count though (every
+ * local site — TWSE itself, Yahoo奇摩股市, MoneyDJ — shows e.g. "15,553張",
+ * never a US-style abbreviated share count), so convert back to 張 for
+ * display on TW rows. US stays as abbreviated shares (M/K), which is how
+ * US sites display volume.
+ */
+export function formatVolume(value: number, market: "TW" | "US" = "US"): string {
+  if (market === "TW") {
+    return `${Math.round(value / 1000).toLocaleString("zh-TW")}張`;
+  }
   if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}B`;
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
