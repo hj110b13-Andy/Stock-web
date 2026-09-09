@@ -25,7 +25,7 @@ export default function SearchClient() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold">搜尋 / 篩選股票</h1>
-        <p className="mt-1 text-sm text-(--text-secondary)">台股、美股分開顯示，各自可依產業、漲跌幅篩選與排序。</p>
+        <p className="mt-1 text-sm text-(--text-secondary)">台股、美股分開顯示，各自可依產業、股價、漲跌幅篩選與排序。</p>
       </div>
 
       <div className="rounded-lg border border-(--gridline) bg-(--surface-1) p-4 space-y-4">
@@ -74,7 +74,9 @@ function MarketSection({
   query: string;
   preset: ChangePreset;
 }) {
-  const [sector, setSector] = useState("");
+  const [sectors, setSectors] = useState<string[]>([]);
+  const [minPrice, setMinPrice] = useState("");
+  const [maxPrice, setMaxPrice] = useState("");
   const [sortBy, setSortBy] = useState<SortBy>("changePercent");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [items, setItems] = useState<SearchItem[] | null>(null);
@@ -83,8 +85,10 @@ function MarketSection({
 
   useEffect(() => {
     const params = new URLSearchParams({ market, sortBy, sortDir });
-    if (sector) params.set("sector", sector);
+    if (sectors.length > 0) params.set("sectors", sectors.join(","));
     if (query) params.set("q", query);
+    if (minPrice) params.set("minPrice", minPrice);
+    if (maxPrice) params.set("maxPrice", maxPrice);
     const cfg = CHANGE_PRESETS[preset];
     if (cfg.min !== undefined) params.set("min", String(cfg.min));
     if (cfg.max !== undefined) params.set("max", String(cfg.max));
@@ -95,41 +99,53 @@ function MarketSection({
       .then((data) => setItems(data.items ?? []))
       .catch(() => {});
     return () => controller.abort();
-  }, [market, sector, query, preset, sortBy, sortDir]);
+  }, [market, sectors, query, preset, minPrice, maxPrice, sortBy, sortDir]);
+
+  function toggleSector(s: string) {
+    setSectors((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]));
+  }
 
   return (
     <div className="rounded-lg border border-(--gridline) bg-(--surface-1) p-4 space-y-3">
-      <div className="flex items-center justify-end">
-        <div className="flex gap-2">
-          <select
-            value={sector}
-            onChange={(e) => setSector(e.target.value)}
-            className="rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1 text-xs"
-          >
-            <option value="">全部產業</option>
-            {sectorOptions.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-          <select
-            value={sortBy}
-            onChange={(e) => setSortBy(e.target.value as SortBy)}
-            className="rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1 text-xs"
-          >
-            <option value="changePercent">漲跌幅</option>
-            <option value="volume">成交量</option>
-            <option value="price">股價</option>
-          </select>
-          <button
-            onClick={() => setSortDir((d) => (d === "desc" ? "asc" : "desc"))}
-            className="rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1 text-xs"
-            title="切換排序方向"
-          >
-            {sortDir === "desc" ? "高→低" : "低→高"}
-          </button>
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <SectorMultiSelect options={sectorOptions} selected={sectors} onToggle={toggleSector} onClear={() => setSectors([])} />
+
+        <div className="flex items-center gap-1">
+          <input
+            type="number"
+            inputMode="decimal"
+            placeholder="最低價"
+            value={minPrice}
+            onChange={(e) => setMinPrice(e.target.value)}
+            className="w-20 rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1 text-xs"
+          />
+          <span className="text-(--text-muted)">–</span>
+          <input
+            type="number"
+            inputMode="decimal"
+            placeholder="最高價"
+            value={maxPrice}
+            onChange={(e) => setMaxPrice(e.target.value)}
+            className="w-20 rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1 text-xs"
+          />
         </div>
+
+        <select
+          value={sortBy}
+          onChange={(e) => setSortBy(e.target.value as SortBy)}
+          className="rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1 text-xs"
+        >
+          <option value="changePercent">漲跌幅</option>
+          <option value="volume">成交量</option>
+          <option value="price">股價</option>
+        </select>
+        <button
+          onClick={() => setSortDir((d) => (d === "desc" ? "asc" : "desc"))}
+          className="rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1 text-xs"
+          title="切換排序方向"
+        >
+          {sortDir === "desc" ? "高→低" : "低→高"}
+        </button>
       </div>
 
       {items === null ? (
@@ -154,6 +170,40 @@ function MarketSection({
         </>
       )}
     </div>
+  );
+}
+
+function SectorMultiSelect({
+  options,
+  selected,
+  onToggle,
+  onClear,
+}: {
+  options: string[];
+  selected: string[];
+  onToggle: (s: string) => void;
+  onClear: () => void;
+}) {
+  return (
+    <details className="relative">
+      <summary className="cursor-pointer list-none rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1 text-xs">
+        產業{selected.length > 0 ? `（已選 ${selected.length}）` : "：全部"}
+      </summary>
+      <div className="absolute right-0 z-20 mt-1 max-h-64 w-48 overflow-y-auto rounded-md border border-(--gridline) bg-(--surface-1) p-2 shadow-lg">
+        <div className="mb-1 flex items-center justify-between">
+          <span className="text-[11px] text-(--text-muted)">多選產業</span>
+          <button onClick={onClear} className="text-[11px] text-(--accent) hover:underline">
+            清除
+          </button>
+        </div>
+        {options.map((s) => (
+          <label key={s} className="flex items-center gap-1.5 rounded px-1 py-1 text-xs hover:bg-(--page-plane)">
+            <input type="checkbox" checked={selected.includes(s)} onChange={() => onToggle(s)} />
+            {s}
+          </label>
+        ))}
+      </div>
+    </details>
   );
 }
 

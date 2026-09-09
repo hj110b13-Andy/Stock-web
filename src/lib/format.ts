@@ -20,6 +20,14 @@ export function formatVolume(value: number): string {
   return value.toString();
 }
 
+export function formatMarketCap(value: number, currency: string): string {
+  const symbol = currency === "TWD" ? "NT$" : "$";
+  if (value >= 1_000_000_000_000) return `${symbol}${(value / 1_000_000_000_000).toFixed(2)}T`;
+  if (value >= 1_000_000_000) return `${symbol}${(value / 1_000_000_000).toFixed(2)}B`;
+  if (value >= 1_000_000) return `${symbol}${(value / 1_000_000).toFixed(1)}M`;
+  return `${symbol}${value.toLocaleString()}`;
+}
+
 /** Taiwan/greater-China convention: red = up, green = down. */
 export function priceDirectionClass(change: number): string {
   if (change > 0) return "text-(--price-up)";

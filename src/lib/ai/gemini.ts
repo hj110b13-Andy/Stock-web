@@ -1,4 +1,5 @@
 import { fetchWithTimeout } from "@/lib/data/cache";
+import type { ChatTurn } from "./types";
 
 // Google Gemini API (generativelanguage.googleapis.com) via plain REST call,
 // so no extra SDK dependency is needed. Free tier: apply for a key at
@@ -51,7 +52,7 @@ async function listCandidateModels(apiKey: string): Promise<string[]> {
   return [...flash, ...rest].slice(0, MAX_CANDIDATES);
 }
 
-async function callGemini(model: string, system: string, userContent: string, apiKey: string): Promise<string> {
+async function callGemini(model: string, system: string, messages: ChatTurn[], apiKey: string): Promise<string> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
   const res = await fetchWithTimeout(url, 8000, {
@@ -59,8 +60,12 @@ async function callGemini(model: string, system: string, userContent: string, ap
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: system }] },
-      contents: [{ role: "user", parts: [{ text: userContent }] }],
-      generationConfig: { maxOutputTokens: 600, temperature: 0.4 },
+      // Gemini uses "model" rather than "assistant" for the AI's turns.
+      contents: messages.map((m) => ({
+        role: m.role === "assistant" ? "model" : "user",
+        parts: [{ text: m.content }],
+      })),
+      generationConfig: { maxOutputTokens: 1000, temperature: 0.4 },
     }),
   });
 
@@ -72,13 +77,13 @@ async function callGemini(model: string, system: string, userContent: string, ap
   return text.trim();
 }
 
-export async function askGemini(system: string, userContent: string, apiKey: string): Promise<string> {
+export async function askGemini(system: string, messages: ChatTurn[], apiKey: string): Promise<string> {
   const keyId = apiKey.slice(-8);
   const known = knownGoodModel.get(keyId);
 
   if (known) {
     try {
-      return await callGemini(known, system, userContent, apiKey);
+      return await callGemini(known, system, messages, apiKey);
     } catch {
       knownGoodModel.delete(keyId); // it stopped working; re-probe below
     }
@@ -89,7 +94,7 @@ export async function askGemini(system: string, userContent: string, apiKey: str
   for (const model of candidates) {
     if (model === known) continue; // already just failed above
     try {
-      const text = await callGemini(model, system, userContent, apiKey);
+      const text = await callGemini(model, system, messages, apiKey);
       knownGoodModel.set(keyId, model);
       return text;
     } catch (err) {

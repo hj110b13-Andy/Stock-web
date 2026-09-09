@@ -1,5 +1,5 @@
 import { fetchWithTimeout } from "./cache";
-import type { Candle, ChartRange, Quote } from "./types";
+import type { Candle, ChartRange, Fundamentals, Quote } from "./types";
 import { findInUniverse } from "./universe";
 
 // TWSE (Taiwan Stock Exchange) public data endpoints. No API key required.
@@ -17,7 +17,35 @@ interface MisRow {
   o: string; // open
   h: string; // high
   l: string; // low
-  v: string; // volume (in 千股/lots depending on field, treated as shares here)
+  v: string; // 累積成交量，單位是「張」（1 張 = 1000 股），需乘 1000 才能跟 STOCK_DAY 的股數對齊
+}
+
+function rowToQuote(row: MisRow): Quote {
+  const prevClose = parseFloat(row.y);
+  const last = row.z === "-" || row.z === "" ? prevClose : parseFloat(row.z);
+  const change = last - prevClose;
+  const known = findInUniverse(row.c, "TW");
+
+  return {
+    symbol: row.c,
+    market: "TW",
+    name: row.n || known?.name || row.c,
+    price: round2(last),
+    change: round2(change),
+    changePercent: prevClose ? round2((change / prevClose) * 100) : 0,
+    open: round2(parseFloat(row.o) || last),
+    high: round2(parseFloat(row.h) || last),
+    low: round2(parseFloat(row.l) || last),
+    prevClose: round2(prevClose),
+    // MIS's v is in 張 (board lots); STOCK_DAY's 成交股數 (used for chart
+    // volume) is in raw shares. Normalize to shares here so a stock's
+    // headline volume and its chart's volume bars are the same unit and
+    // don't disagree by 1000x.
+    volume: (parseInt(row.v, 10) || 0) * 1000,
+    currency: "TWD",
+    updatedAt: new Date().toISOString(),
+    isMock: false,
+  };
 }
 
 export async function fetchTwseQuote(stockNo: string): Promise<Quote> {
@@ -28,28 +56,31 @@ export async function fetchTwseQuote(stockNo: string): Promise<Quote> {
   const data = (await res.json()) as { msgArray?: MisRow[] };
   const row = data.msgArray?.[0];
   if (!row) throw new Error(`No TWSE quote for ${stockNo}`);
+  return rowToQuote(row);
+}
 
-  const prevClose = parseFloat(row.y);
-  const last = row.z === "-" || row.z === "" ? prevClose : parseFloat(row.z);
-  const change = last - prevClose;
-  const known = findInUniverse(stockNo, "TW");
+/**
+ * MIS supports querying many stocks in one request via a pipe-separated
+ * ex_ch list. Listing pages (search/highlights/homepage movers) were each
+ * calling fetchTwseQuote() per stock — 20+ concurrent requests to an
+ * endpoint meant for single-stock lookups, which tends to get rate-limited
+ * or time out under that load and silently fall back to mock data for the
+ * whole list. One batched request is far more likely to actually succeed.
+ */
+export async function fetchTwseQuotesBatch(stockNos: string[]): Promise<Map<string, Quote>> {
+  const map = new Map<string, Quote>();
+  if (stockNos.length === 0) return map;
 
-  return {
-    symbol: stockNo,
-    market: "TW",
-    name: row.n || known?.name || stockNo,
-    price: round2(last),
-    change: round2(change),
-    changePercent: prevClose ? round2((change / prevClose) * 100) : 0,
-    open: round2(parseFloat(row.o) || last),
-    high: round2(parseFloat(row.h) || last),
-    low: round2(parseFloat(row.l) || last),
-    prevClose: round2(prevClose),
-    volume: parseInt(row.v, 10) || 0,
-    currency: "TWD",
-    updatedAt: new Date().toISOString(),
-    isMock: false,
-  };
+  const chExpr = stockNos.map((s) => `tse_${s}.tw`).join("|");
+  const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${chExpr}&json=1&delay=0`;
+  const res = await fetchWithTimeout(url, 6000, {
+    headers: { Referer: "https://mis.twse.com.tw/stock/index.jsp" },
+  });
+  const data = (await res.json()) as { msgArray?: MisRow[] };
+  for (const row of data.msgArray ?? []) {
+    map.set(row.c, rowToQuote(row));
+  }
+  return map;
 }
 
 const RANGE_MONTHS: Record<ChartRange, number> = { "1m": 1, "3m": 3, "6m": 6, "1y": 12 };
@@ -91,6 +122,37 @@ async function fetchMonth(stockNo: string, dateParam: string): Promise<Candle[]>
       volume: parseInt(row[1].replace(/,/g, ""), 10) || 0,
     };
   });
+}
+
+interface BwibbuRow {
+  Code: string;
+  Name: string;
+  PEratio: string;
+  DividendYield: string;
+  PBratio: string;
+}
+
+/**
+ * TWSE's official (not the unofficial MIS one) open-data endpoint for
+ * 本益比/殖利率/股價淨值比 — one request covers every listed stock, so
+ * this is fetched and cached once rather than per symbol. No market cap
+ * in this dataset (would need shares-outstanding data TWSE doesn't expose
+ * this simply); the fundamentals card just omits it for TW.
+ */
+export async function fetchTwseFundamentalsAll(): Promise<Map<string, Fundamentals>> {
+  const url = "https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_ALL";
+  const res = await fetchWithTimeout(url, 8000);
+  const rows = (await res.json()) as BwibbuRow[];
+  const map = new Map<string, Fundamentals>();
+  for (const row of rows) {
+    const peRatio = parseFloat(row.PEratio);
+    const dividendYield = parseFloat(row.DividendYield);
+    map.set(row.Code, {
+      peRatio: Number.isFinite(peRatio) && peRatio > 0 ? peRatio : undefined,
+      dividendYield: Number.isFinite(dividendYield) && dividendYield > 0 ? dividendYield : undefined,
+    });
+  }
+  return map;
 }
 
 function rocToIso(roc: string): string {

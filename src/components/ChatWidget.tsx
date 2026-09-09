@@ -36,6 +36,7 @@ export default function ChatWidget() {
   async function send(question: string) {
     const trimmed = question.trim();
     if (!trimmed || loading) return;
+    const history = messages.map((m) => ({ role: m.role, content: m.text }));
     setMessages((m) => [...m, { role: "user", text: trimmed }]);
     setInput("");
     setLoading(true);
@@ -43,7 +44,7 @@ export default function ChatWidget() {
       const res = await fetch("/api/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: trimmed, symbol: contextSymbol?.symbol }),
+        body: JSON.stringify({ question: trimmed, symbol: contextSymbol?.symbol, history }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "發生錯誤");
@@ -66,9 +67,20 @@ export default function ChatWidget() {
                 <p className="text-xs text-(--text-muted)">目前聚焦：{contextSymbol.name}（{contextSymbol.symbol}）</p>
               )}
             </div>
-            <button onClick={() => setOpen(false)} className="text-(--text-muted) hover:text-(--text-primary)" aria-label="關閉">
-              ✕
-            </button>
+            <div className="flex items-center gap-2">
+              {messages.length > 0 && (
+                <button
+                  onClick={() => setMessages([])}
+                  className="text-xs text-(--text-muted) hover:text-(--text-primary)"
+                  title="清空對話"
+                >
+                  清空對話
+                </button>
+              )}
+              <button onClick={() => setOpen(false)} className="text-(--text-muted) hover:text-(--text-primary)" aria-label="關閉">
+                ✕
+              </button>
+            </div>
           </div>
 
           <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto px-4 py-3">

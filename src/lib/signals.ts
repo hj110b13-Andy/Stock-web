@@ -1,4 +1,4 @@
-import type { Candle, ChartRange } from "@/lib/data";
+import type { Candle, ChartRange } from "@/lib/data/types";
 
 export interface Signal {
   label: string;

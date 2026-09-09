@@ -12,6 +12,31 @@ function subscribe(callback: () => void) {
 }
 
 const EMPTY: WatchlistItem[] = [];
+type SortBy = "changePercent" | "volume" | "price" | "name";
+
+function exportCsv(items: SearchItem[]) {
+  const header = ["市場", "代碼", "名稱", "股價", "漲跌幅(%)", "成交量"];
+  const rows = items.map((i) => [
+    i.market === "TW" ? "台股" : "美股",
+    i.symbol,
+    i.name,
+    i.price,
+    i.changePercent,
+    i.volume,
+  ]);
+  const csv = [header, ...rows]
+    .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
+    .join("\r\n");
+  const blob = new Blob([`﻿${csv}`], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `我的關注_${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
 
 export default function WatchlistSection() {
   const list = useSyncExternalStore(
@@ -20,6 +45,8 @@ export default function WatchlistSection() {
     () => EMPTY // server snapshot: localStorage isn't available during SSR
   );
   const [items, setItems] = useState<SearchItem[]>([]);
+  const [sortBy, setSortBy] = useState<SortBy>("changePercent");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
   useEffect(() => {
     if (list.length === 0) return;
@@ -52,11 +79,44 @@ export default function WatchlistSection() {
     };
   }, [list]);
 
-  const displayItems = list.length === 0 ? [] : items;
+  const displayItems = [...(list.length === 0 ? [] : items)].sort((a, b) => {
+    const diff = sortBy === "name" ? a.name.localeCompare(b.name) : a[sortBy] - b[sortBy];
+    return sortDir === "desc" ? -diff : diff;
+  });
 
   return (
     <section className="rounded-lg border border-(--gridline) bg-(--surface-1) p-4">
-      <h2 className="mb-2 font-semibold">我的關注</h2>
+      <div className="mb-2 flex items-center justify-between">
+        <h2 className="font-semibold">我的關注</h2>
+        {displayItems.length > 0 && (
+          <div className="flex items-center gap-2">
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as SortBy)}
+              className="rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1 text-xs"
+            >
+              <option value="changePercent">依漲跌幅</option>
+              <option value="volume">依成交量</option>
+              <option value="price">依股價</option>
+              <option value="name">依名稱</option>
+            </select>
+            <button
+              onClick={() => setSortDir((d) => (d === "desc" ? "asc" : "desc"))}
+              className="rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1 text-xs"
+              title="切換排序方向"
+            >
+              {sortDir === "desc" ? "高→低" : "低→高"}
+            </button>
+            <button
+              onClick={() => exportCsv(displayItems)}
+              className="rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1 text-xs hover:bg-(--page-plane)"
+              title="匯出成 CSV"
+            >
+              匯出 CSV
+            </button>
+          </div>
+        )}
+      </div>
       {list.length === 0 ? (
         <p className="py-6 text-center text-sm text-(--text-muted)">
           點股票列表或個股頁面的 ☆ 即可加入關注清單，方便下次快速查看

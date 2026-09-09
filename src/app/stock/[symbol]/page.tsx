@@ -3,7 +3,8 @@ import StockChart from "@/components/StockChart";
 import DataBadge from "@/components/DataBadge";
 import AskAboutButton from "@/components/AskAboutButton";
 import WatchlistButton from "@/components/WatchlistButton";
-import { getQuote } from "@/lib/data";
+import FundamentalsCard from "@/components/FundamentalsCard";
+import { getQuote, getFundamentals } from "@/lib/data";
 import type { Market } from "@/lib/data";
 import { formatChange, formatPercent, formatPrice, formatVolume, priceDirectionClass } from "@/lib/format";
 
@@ -20,7 +21,10 @@ export default async function StockDetailPage({ params, searchParams }: PageProp
   if (!symbol) notFound();
 
   const marketHint = market === "TW" || market === "US" ? (market as Market) : undefined;
-  const quote = await getQuote(symbol, marketHint);
+  const [quote, fundamentals] = await Promise.all([
+    getQuote(symbol, marketHint),
+    getFundamentals(symbol, marketHint),
+  ]);
 
   return (
     <div className="space-y-6">
@@ -57,6 +61,8 @@ export default async function StockDetailPage({ params, searchParams }: PageProp
           <Stat label="成交量" value={formatVolume(quote.volume)} />
         </dl>
       </section>
+
+      <FundamentalsCard fundamentals={fundamentals} currency={quote.currency} />
 
       <StockChart symbol={quote.symbol} market={quote.market} currentPrice={quote.price} />
       <p className="text-xs text-(--text-muted)">

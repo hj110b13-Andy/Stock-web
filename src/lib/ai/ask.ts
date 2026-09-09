@@ -1,6 +1,7 @@
 import { getChart, getIndices, getQuote } from "@/lib/data";
 import type { Market } from "@/lib/data";
 import { callAiProviders } from "@/lib/ai/provider";
+import type { ChatTurn } from "@/lib/ai/types";
 
 export interface AskResult {
   answer: string;
@@ -49,7 +50,11 @@ function guessSymbolFromText(text: string): { symbol: string; market: Market } |
   return undefined;
 }
 
-export async function answerQuestion(question: string, contextSymbol?: string): Promise<AskResult> {
+export async function answerQuestion(
+  question: string,
+  contextSymbol?: string,
+  history: ChatTurn[] = []
+): Promise<AskResult> {
   const target = contextSymbol
     ? { symbol: contextSymbol, market: undefined as Market | undefined }
     : guessSymbolFromText(question);
@@ -86,13 +91,15 @@ export async function answerQuestion(question: string, contextSymbol?: string): 
     "請根據資料回答，不要編造資料中沒有的數字。",
     "如果資料標示為離線示範資料，請提醒使用者這只是示範用途，不是真實報價。",
     "務必提醒使用者：這是資訊整理，不構成投資建議。",
+    "使用者之前的提問與你的回覆會一併附上作為對話紀錄，回答新問題時請自然承接對話脈絡（例如使用者接著問「那美股呢」時，要記得他上一句在問什麼）。",
   ].join("\n");
 
   const userContent = grounding
     ? `參考資料：\n${grounding}\n\n使用者問題：${question}`
     : `使用者問題：${question}\n（目前沒有可用的參考資料，請根據一般金融知識簡短回答，並說明無法取得即時資料。）`;
 
-  const result = await callAiProviders(system, userContent);
+  const messages: ChatTurn[] = [...history, { role: "user", content: userContent }];
+  const result = await callAiProviders(system, messages);
   if (result.usedAi) return { answer: result.answer, groundedSymbol, usedAi: true };
 
   return {

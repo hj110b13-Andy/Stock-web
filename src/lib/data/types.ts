@@ -56,3 +56,9 @@ export interface IndexQuote {
   changePercent: number;
   isMock: boolean;
 }
+
+export interface Fundamentals {
+  peRatio?: number;
+  dividendYield?: number;
+  marketCap?: number;
+}
