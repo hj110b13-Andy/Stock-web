@@ -29,13 +29,20 @@
 
 ## AI 問答設定
 
-AI 問答預設會使用 [Claude API](https://console.anthropic.com/)（`claude-sonnet-5`）產生回覆，並以即時/近即時報價與近期走勢作為依據（RAG 概念，非憑空生成數字）。
+AI 問答會以即時/近即時報價與近期走勢作為依據（RAG 概念，非憑空生成數字），支援兩種模型供應商：
 
-1. 建立 `.env.local`：
-   ```bash
-   ANTHROPIC_API_KEY=sk-ant-xxxx
-   ```
-2. 若未設定金鑰，`/api/ask` 會回傳「原始資料整理」的罐頭回覆（仍會附上即時/近即時報價），並提示使用者尚未啟用 AI，網站其餘功能不受影響。
+| 供應商 | 環境變數 | 費用 | 申請 |
+|---|---|---|---|
+| Google Gemini（優先使用） | `GEMINI_API_KEY` | 有免費額度，不需信用卡 | https://aistudio.google.com/apikey |
+| Anthropic Claude | `ANTHROPIC_API_KEY` | 按量計費 | https://console.anthropic.com |
+
+兩個都設定時會優先呼叫 Gemini，失敗才 fallback 到 Claude。兩個都沒設定時，`/api/ask` 會回傳「原始資料整理」的罐頭回覆（仍會附上即時/近即時報價），並提示使用者尚未啟用 AI，網站其餘功能不受影響。
+
+本機開發建立 `.env.local`：
+```bash
+GEMINI_API_KEY=xxxx
+```
+部署在 Vercel 則在 Project → Settings → Environment Variables 新增同名變數。
 
 ## 開發
 
