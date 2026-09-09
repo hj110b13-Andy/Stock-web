@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { SearchItem } from "@/lib/data";
 import { formatPercent, formatPrice, formatVolume, priceDirectionClass } from "@/lib/format";
+import WatchlistButton from "./WatchlistButton";
 
 export default function StockTable({ items, emptyLabel }: { items: SearchItem[]; emptyLabel?: string }) {
   if (items.length === 0) {
@@ -12,6 +13,7 @@ export default function StockTable({ items, emptyLabel }: { items: SearchItem[];
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-(--gridline) text-left text-(--text-muted)">
+            <th className="w-8" />
             <th className="py-2 pr-4 font-medium">代碼 / 名稱</th>
             <th className="py-2 pr-4 font-medium">產業</th>
             <th className="py-2 pr-4 font-medium text-right">股價</th>
@@ -22,6 +24,9 @@ export default function StockTable({ items, emptyLabel }: { items: SearchItem[];
         <tbody>
           {items.map((item) => (
             <tr key={`${item.market}:${item.symbol}`} className="border-b border-(--gridline) last:border-0 hover:bg-(--page-plane)">
+              <td className="py-2.5 pl-1">
+                <WatchlistButton symbol={item.symbol} market={item.market} name={item.name} />
+              </td>
               <td className="py-2.5 pr-4">
                 <Link href={`/stock/${item.symbol}?market=${item.market}`} className="font-medium hover:text-(--accent)">
                   {item.name}

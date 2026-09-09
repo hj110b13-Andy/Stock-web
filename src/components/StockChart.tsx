@@ -11,12 +11,22 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import type { Candle, ChartRange } from "@/lib/data";
+import { computeSignals } from "@/lib/signals";
 import DataBadge from "./DataBadge";
+import SignalTags from "./SignalTags";
 
 const RANGE_LABELS: Record<ChartRange, string> = { "1m": "1個月", "3m": "3個月", "6m": "6個月", "1y": "1年" };
 const RANGES: ChartRange[] = ["1m", "3m", "6m", "1y"];
 
-export default function StockChart({ symbol, market }: { symbol: string; market: "TW" | "US" }) {
+export default function StockChart({
+  symbol,
+  market,
+  currentPrice,
+}: {
+  symbol: string;
+  market: "TW" | "US";
+  currentPrice: number;
+}) {
   const [range, setRange] = useState<ChartRange>("3m");
   const [candles, setCandles] = useState<Candle[] | null>(null);
   const [isMock, setIsMock] = useState(false);
@@ -121,6 +131,11 @@ export default function StockChart({ symbol, market }: { symbol: string; market:
     chartRef.current.timeScale().fitContent();
   }, [chartData]);
 
+  const signals = useMemo(
+    () => (candles ? computeSignals(candles, currentPrice, range) : []),
+    [candles, currentPrice, range]
+  );
+
   return (
     <div className="rounded-lg border border-(--gridline) bg-(--surface-1) p-4">
       <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
@@ -141,6 +156,11 @@ export default function StockChart({ symbol, market }: { symbol: string; market:
         </div>
         {candles && <DataBadge isMock={isMock} />}
       </div>
+      {signals.length > 0 && (
+        <div className="mb-3">
+          <SignalTags signals={signals} />
+        </div>
+      )}
       <div className="relative h-[360px] w-full">
         <div ref={containerRef} className="absolute inset-0" />
         {error && (

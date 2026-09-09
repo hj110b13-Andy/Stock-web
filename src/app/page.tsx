@@ -2,15 +2,19 @@ import Link from "next/link";
 import IndexCard from "@/components/IndexCard";
 import StockTable from "@/components/StockTable";
 import DataBadge from "@/components/DataBadge";
+import WatchlistSection from "@/components/WatchlistSection";
+import DailyBriefCard from "@/components/DailyBriefCard";
 import { getIndices, searchStocks } from "@/lib/data";
+import { getDailyBrief } from "@/lib/ai/brief";
 
 export const revalidate = 0;
 
 export default async function HomePage() {
-  const [indices, twMovers, usMovers] = await Promise.all([
+  const [indices, twMovers, usMovers, brief] = await Promise.all([
     getIndices(),
     searchStocks({ market: "TW", sortBy: "changePercent", sortDir: "desc" }),
     searchStocks({ market: "US", sortBy: "changePercent", sortDir: "desc" }),
+    getDailyBrief(),
   ]);
 
   const indicesAnyMock = indices.some((i) => i.isMock);
@@ -43,8 +47,18 @@ export default async function HomePage() {
           >
             前往搜尋 / 篩選
           </Link>
+          <Link
+            href="/highlights"
+            className="rounded-md border border-(--gridline) bg-(--surface-2) px-4 py-2 text-sm font-medium hover:bg-(--page-plane)"
+          >
+            每日焦點榜單
+          </Link>
         </div>
       </section>
+
+      <DailyBriefCard brief={brief} />
+
+      <WatchlistSection />
 
       <section>
         <div className="flex items-center justify-between mb-3">

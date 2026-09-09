@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import StockChart from "@/components/StockChart";
 import DataBadge from "@/components/DataBadge";
 import AskAboutButton from "@/components/AskAboutButton";
+import WatchlistButton from "@/components/WatchlistButton";
 import { getQuote } from "@/lib/data";
 import type { Market } from "@/lib/data";
 import { formatChange, formatPercent, formatPrice, formatVolume, priceDirectionClass } from "@/lib/format";
@@ -27,6 +28,7 @@ export default async function StockDetailPage({ params, searchParams }: PageProp
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="flex items-center gap-2">
+              <WatchlistButton symbol={quote.symbol} market={quote.market} name={quote.name} size="md" />
               <h1 className="text-2xl font-bold">{quote.name}</h1>
               <span className="rounded bg-(--page-plane) px-2 py-0.5 text-xs text-(--text-muted)">
                 {quote.symbol} · {quote.market === "TW" ? "台股" : "美股"}
@@ -56,7 +58,10 @@ export default async function StockDetailPage({ params, searchParams }: PageProp
         </dl>
       </section>
 
-      <StockChart symbol={quote.symbol} market={quote.market} />
+      <StockChart symbol={quote.symbol} market={quote.market} currentPrice={quote.price} />
+      <p className="text-xs text-(--text-muted)">
+        圖表上方標籤為根據歷史價量計算出的客觀技術訊號（例如成交量、均線、區間高低），僅描述數據現況，不是買賣建議。
+      </p>
     </div>
   );
 }

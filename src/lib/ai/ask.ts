@@ -1,7 +1,6 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { getChart, getIndices, getQuote } from "@/lib/data";
 import type { Market } from "@/lib/data";
-import { askGemini } from "@/lib/ai/gemini";
+import { callAiProviders } from "@/lib/ai/provider";
 
 export interface AskResult {
   answer: string;
@@ -80,17 +79,6 @@ export async function answerQuestion(question: string, contextSymbol?: string): 
     .filter(Boolean)
     .join("\n\n");
 
-  const geminiKey = process.env.GEMINI_API_KEY;
-  const anthropicKey = process.env.ANTHROPIC_API_KEY;
-
-  if (!geminiKey && !anthropicKey) {
-    return {
-      answer: buildCannedAnswer(grounding, groundedSymbol, "沒有偵測到 GEMINI_API_KEY 或 ANTHROPIC_API_KEY 這兩個環境變數。"),
-      groundedSymbol,
-      usedAi: false,
-    };
-  }
-
   const system = [
     "你是一個股票研究網站上的助理，回答繁體中文問題，語氣專業、精簡、條列清楚。",
     "你會同時拿到「個股資料」（若使用者問特定股票）與「大盤概況」（台股加權指數、道瓊、S&P 500、那斯達克）。",
@@ -104,47 +92,11 @@ export async function answerQuestion(question: string, contextSymbol?: string): 
     ? `參考資料：\n${grounding}\n\n使用者問題：${question}`
     : `使用者問題：${question}\n（目前沒有可用的參考資料，請根據一般金融知識簡短回答，並說明無法取得即時資料。）`;
 
-  // Prefer Gemini (free tier) when both keys are configured.
-  const failures: string[] = [];
-
-  if (geminiKey) {
-    try {
-      const answer = await askGemini(system, userContent, geminiKey);
-      return { answer, groundedSymbol, usedAi: true };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error("[ask] Gemini call failed:", message);
-      failures.push(`Gemini 呼叫失敗：${message.slice(0, 300)}`);
-    }
-  }
-
-  if (anthropicKey) {
-    try {
-      const client = new Anthropic({ apiKey: anthropicKey });
-      const message = await client.messages.create({
-        model: "claude-sonnet-5",
-        max_tokens: 600,
-        system,
-        messages: [{ role: "user", content: userContent }],
-      });
-
-      const answer = message.content
-        .filter((block): block is Anthropic.TextBlock => block.type === "text")
-        .map((block) => block.text)
-        .join("\n")
-        .trim();
-
-      if (answer) return { answer, groundedSymbol, usedAi: true };
-      failures.push("Claude 回傳了空白回覆");
-    } catch (err) {
-      const errMessage = err instanceof Error ? err.message : String(err);
-      console.error("[ask] Anthropic call failed:", errMessage);
-      failures.push(`Claude 呼叫失敗：${errMessage.slice(0, 300)}`);
-    }
-  }
+  const result = await callAiProviders(system, userContent);
+  if (result.usedAi) return { answer: result.answer, groundedSymbol, usedAi: true };
 
   return {
-    answer: buildCannedAnswer(grounding, groundedSymbol, failures.join(" / ")),
+    answer: buildCannedAnswer(grounding, groundedSymbol, result.failureReason ?? "未知原因"),
     groundedSymbol,
     usedAi: false,
   };

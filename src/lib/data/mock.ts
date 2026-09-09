@@ -43,7 +43,13 @@ function guessMeta(symbol: string, market?: Market) {
 
 export function mockQuote(symbolInput: string, market?: Market): Quote {
   const meta = guessMeta(symbolInput, market);
-  return mockQuoteFromBase(meta.symbol, meta.name, meta.market, meta.currency, meta.basePrice);
+  // Anchor "yesterday's close" to the same underlying random walk mockCandles
+  // draws from, so the live quote and the chart never disagree about where
+  // the stock actually is (and so technical signals computed from both
+  // don't fire on a mismatch that isn't really there).
+  const walk = fullWalk(meta.symbol, meta.market, meta.basePrice);
+  const anchor = walk[walk.length - 1].close;
+  return mockQuoteFromBase(meta.symbol, meta.name, meta.market, meta.currency, anchor);
 }
 
 export function mockQuoteFromBase(
@@ -89,18 +95,24 @@ const RANGE_DAYS: Record<ChartRange, number> = {
   "6m": 130,
   "1y": 252,
 };
+const FULL_WALK_DAYS = RANGE_DAYS["1y"];
 
-export function mockCandles(symbolInput: string, range: ChartRange, market?: Market): Candle[] {
-  const meta = guessMeta(symbolInput, market);
-  const days = RANGE_DAYS[range];
-  const rand = mulberry32(hashSeed(`${meta.symbol}:candles`));
+/**
+ * A single deterministic random walk per symbol, always generated at full
+ * (1y) length regardless of the range being requested. mockCandles slices
+ * its tail so every range is a consistent view of the same path (switching
+ * ranges never jumps "today's" price), and mockQuote anchors to its last
+ * close so the live quote and the chart agree.
+ */
+function fullWalk(symbol: string, market: Market, basePrice: number): Candle[] {
+  const rand = mulberry32(hashSeed(`${symbol}:walk`));
   const candles: Candle[] = [];
 
-  let price = meta.basePrice * (0.85 + rand() * 0.3);
+  let price = basePrice * (0.85 + rand() * 0.3);
   const now = new Date();
   const points: Date[] = [];
   const cursor = new Date(now);
-  while (points.length < days) {
+  while (points.length < FULL_WALK_DAYS) {
     if (cursor.getDay() !== 0 && cursor.getDay() !== 6) {
       points.unshift(new Date(cursor));
     }
@@ -116,16 +128,22 @@ export function mockCandles(symbolInput: string, range: ChartRange, market?: Mar
     const volume = Math.floor(800_000 + rand() * 15_000_000);
     candles.push({
       time: date.toISOString().slice(0, 10),
-      open: round(open, meta.market),
-      high: round(high, meta.market),
-      low: round(low, meta.market),
-      close: round(close, meta.market),
+      open: round(open, market),
+      high: round(high, market),
+      low: round(low, market),
+      close: round(close, market),
       volume,
     });
     price = close;
   }
 
   return candles;
+}
+
+export function mockCandles(symbolInput: string, range: ChartRange, market?: Market): Candle[] {
+  const meta = guessMeta(symbolInput, market);
+  const days = RANGE_DAYS[range];
+  return fullWalk(meta.symbol, meta.market, meta.basePrice).slice(-days);
 }
 
 function round(value: number, market: Market | "PCT"): number {
