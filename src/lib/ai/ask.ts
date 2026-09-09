@@ -69,9 +69,13 @@ export async function answerQuestion(
   const [stockGrounding, indexGrounding] = await Promise.all([
     target ? buildStockGrounding(target) : Promise.resolve(undefined),
     getIndices()
-      .then((indices) =>
-        indices.map((i) => `${i.name}：${i.price}（${i.change >= 0 ? "+" : ""}${i.changePercent}%）`).join("\n")
-      )
+      .then((indices) => {
+        const lines = indices.map((i) => `${i.name}：${i.price}（${i.change >= 0 ? "+" : ""}${i.changePercent}%）`);
+        if (indices.some((i) => i.isMock)) {
+          lines.push("（注意：以上部分或全部指數為離線示範資料，非即時真實報價，數字可能與實際盤面有落差）");
+        }
+        return lines.join("\n");
+      })
       .catch(() => ""),
   ]);
 
