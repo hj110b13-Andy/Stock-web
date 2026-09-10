@@ -50,6 +50,7 @@ export async function GET(req: NextRequest) {
     });
     return NextResponse.json({ items: limit !== undefined ? items.slice(0, limit) : items });
   } catch (err) {
-    return NextResponse.json({ error: (err as Error).message }, { status: 500 });
+    console.error("[search] searchStocks failed:", err);
+    return NextResponse.json({ error: "搜尋時發生錯誤" }, { status: 500 });
   }
 }

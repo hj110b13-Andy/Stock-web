@@ -43,6 +43,21 @@ export async function callAiProviders(system: string, messages: ChatTurn[]): Pro
   const firstUser = turns.findIndex((t) => t.role === "user");
   turns = firstUser <= 0 ? turns : turns.slice(firstUser);
 
+  // Both providers also reject two consecutive turns with the same role.
+  // The chat widget always alternates strictly so this never fires there,
+  // but `messages` is caller-supplied, and a caller that ever passes two
+  // user (or assistant) turns back to back would otherwise 400 the same
+  // way the leading-assistant-turn bug used to.
+  turns = turns.reduce<ChatTurn[]>((merged, turn) => {
+    const prev = merged[merged.length - 1];
+    if (prev && prev.role === turn.role) {
+      prev.content = `${prev.content}\n${turn.content}`;
+    } else {
+      merged.push({ ...turn });
+    }
+    return merged;
+  }, []);
+
   const failures: string[] = [];
   if (turns.length === 0) {
     return { answer: "", usedAi: false, failureReason: "沒有可送出的對話內容。" };
