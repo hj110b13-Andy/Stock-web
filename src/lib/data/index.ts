@@ -1,4 +1,4 @@
-import { cached } from "./cache";
+import { cached, cachedMap } from "./cache";
 import type { ChartRange, ChartResponse, Fundamentals, IndexQuote, Market, Quote, SearchItem } from "./types";
 import { US_UNIVERSE, findInUniverse, getTwUniverse, UniverseEntry } from "./universe";
 import { fetchTwseCandles, fetchTwseFundamentalsAll, fetchTwseQuote, fetchTwseQuotesBatch } from "./twse";
@@ -85,7 +85,7 @@ export async function getFundamentals(symbolInput: string, marketHint?: Market):
   const market = marketHint ?? detectMarket(symbol);
   try {
     if (market === "TW") {
-      const map = await cached("fundamentals:TW:all", FUNDAMENTALS_TTL_MS, fetchTwseFundamentalsAll);
+      const map = await cachedMap("fundamentals:TW:all", FUNDAMENTALS_TTL_MS, fetchTwseFundamentalsAll);
       return map.get(symbol) ?? null;
     }
     return await cached(`fundamentals:US:${symbol}`, FUNDAMENTALS_TTL_MS, () => fetchUsFundamentals(symbol));
@@ -179,8 +179,10 @@ async function fetchMarketQuoteMap(market: Market): Promise<Map<string, Quote>> 
   return map;
 }
 
+// cachedMap, not cached: this value is a Map, and the Redis backend stores
+// JSON — a Map would come back from a shared-cache hit as an empty object.
 async function getMarketQuoteMap(market: Market): Promise<Map<string, Quote>> {
-  return cached(`market-quotes:${market}`, QUOTE_TTL_MS, () => fetchMarketQuoteMap(market));
+  return cachedMap(`market-quotes:${market}`, QUOTE_TTL_MS, () => fetchMarketQuoteMap(market));
 }
 
 export interface SearchFilters {
