@@ -86,9 +86,14 @@ export default function WatchlistSection() {
   // returned) so removing every watched stock immediately clears the sort/
   // export controls and the export button, instead of them lingering with
   // stale data from before the list was emptied.
-  const watchedKeys = new Set(list.map((w) => `${w.market}:${w.symbol}`));
+  // Uppercased on both sides: stored watchlist entries are always written
+  // uppercase by WatchlistButton, but comparing case-insensitively means a
+  // stray lowercase entry (e.g. hand-edited localStorage) degrades to
+  // "unavailable" for that one symbol instead of silently dropping it here
+  // while a real quote for it was actually fetched successfully.
+  const watchedKeys = new Set(list.map((w) => `${w.market}:${w.symbol.toUpperCase()}`));
   const displayItems = (items ?? [])
-    .filter((i) => watchedKeys.has(`${i.market}:${i.symbol}`))
+    .filter((i) => watchedKeys.has(`${i.market}:${i.symbol.toUpperCase()}`))
     .sort((a, b) => {
       const diff = sortBy === "name" ? a.name.localeCompare(b.name) : a[sortBy] - b[sortBy];
       return sortDir === "desc" ? -diff : diff;
