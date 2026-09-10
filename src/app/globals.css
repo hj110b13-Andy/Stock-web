@@ -68,7 +68,9 @@
   --accent: #3987e5;
   --accent-soft: #184f95;
   --price-up: #e66767;
-  --price-down: #008300;
+  /* Brightened from the light-mode #008300 — that green's contrast against
+     the dark surfaces here is ~3.9:1, under WCAG's 4.5:1 text threshold. */
+  --price-down: #00b300;
 }
 
 * {
