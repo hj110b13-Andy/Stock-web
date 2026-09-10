@@ -12,7 +12,8 @@ export default function DailyBriefCard({ brief }: { brief: DailyBrief }) {
       <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-(--text-secondary)">{brief.text}</p>
       <p className="mt-3 text-[11px] text-(--text-muted)">
         {brief.usedAi ? "由 AI 依當前市場資料自動生成，" : ""}
-        僅為資訊整理與客觀描述，不構成投資建議 · 更新於 {new Date(brief.generatedAt).toLocaleTimeString("zh-TW")}
+        僅為資訊整理與客觀描述，不構成投資建議 · 更新於{" "}
+        {new Date(brief.generatedAt).toLocaleTimeString("zh-TW", { timeZone: "Asia/Taipei" })}
       </p>
     </section>
   );

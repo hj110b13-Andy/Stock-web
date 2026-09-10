@@ -61,7 +61,8 @@ export default function LiveQuoteHeader({ initialQuote }: { initialQuote: Quote 
         <MarketStatusBadge status={status} />
       </div>
       <p className="mt-1 text-xs text-(--text-muted)">
-        更新時間：{new Date(quote.updatedAt).toLocaleString("zh-TW")} · 幣別 {quote.currency}
+        更新時間：{new Date(quote.updatedAt).toLocaleString("zh-TW", { timeZone: "Asia/Taipei" })}（台北時間）· 幣別{" "}
+        {quote.currency}
         {status === "closed" && "（非交易時段，顯示最近一次收盤資訊）"}
       </p>
 

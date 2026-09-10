@@ -18,8 +18,22 @@ export function detectMarket(symbolInput: string): Market {
   return /^\d{3,6}$/.test(symbolInput.trim()) ? "TW" : "US";
 }
 
+/**
+ * Route params (e.g. the [symbol] segment in /stock/[symbol]) can arrive
+ * still percent-encoded in some Next.js render paths — decode defensively
+ * so a Chinese company name typed into the header search box (which just
+ * navigates straight to /stock/<input>) doesn't show up as raw "%E5%8F..."
+ * on the page. Safe to call on an already-decoded plain symbol like
+ * "2330"/"AAPL" too: decodeURIComponent is a no-op without a "%" in it.
+ */
 export function normalizeSymbol(symbolInput: string): string {
-  return symbolInput.trim().toUpperCase().replace(/\.(TW|TWO|US)$/i, "");
+  let decoded = symbolInput;
+  try {
+    decoded = decodeURIComponent(symbolInput);
+  } catch {
+    // malformed percent-encoding; fall back to the raw input
+  }
+  return decoded.trim().toUpperCase().replace(/\.(TW|TWO|US)$/i, "");
 }
 
 const QUOTE_TTL_MS = 20_000;

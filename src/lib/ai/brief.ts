@@ -83,7 +83,7 @@ export async function getDailyBrief(): Promise<DailyBrief> {
       usGainers[0] ? `美股漲幅居首：${usGainers[0].name}(${usGainers[0].symbol}) ${usGainers[0].changePercent}%。` : "",
       twLosers[0] ? `台股跌幅居首：${twLosers[0].name}(${twLosers[0].symbol}) ${twLosers[0].changePercent}%。` : "",
       usLosers[0] ? `美股跌幅居首：${usLosers[0].name}(${usLosers[0].symbol}) ${usLosers[0].changePercent}%。` : "",
-      `（AI 快報暫時無法產生：${result.failureReason ?? "未知原因"}，以上為原始資料整理）`,
+      `（AI 快報暫時無法產生：${(result.failureReason ?? "未知原因").replace(/。$/, "")}，以上為原始資料整理）`,
     ]
       .filter(Boolean)
       .join(" ");

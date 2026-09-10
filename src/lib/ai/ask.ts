@@ -115,7 +115,7 @@ function buildCannedAnswer(grounding: string, groundedSymbol: string | undefined
     groundedSymbol ? `以下是關於 ${groundedSymbol} 的目前資料：` : "以下是目前的市場資料：",
     grounding || "（目前無法取得資料，可能是網路或資料源暫時無法連線。）",
     "",
-    `提醒：AI 問答目前無法產生完整回覆（原因：${reason}），以上僅為原始資料整理，並非 AI 生成的分析。`,
+    `提醒：AI 問答目前無法產生完整回覆（原因：${reason.replace(/。$/, "")}），以上僅為原始資料整理，並非 AI 生成的分析。`,
     "本站資訊僅供參考，不構成投資建議。",
   ];
   return lines.join("\n");

@@ -44,7 +44,7 @@ export default function WatchlistSection() {
     getWatchlist,
     () => EMPTY // server snapshot: localStorage isn't available during SSR
   );
-  const [items, setItems] = useState<SearchItem[]>([]);
+  const [items, setItems] = useState<SearchItem[] | null>(null); // null = not fetched yet for the current list
   const [sortBy, setSortBy] = useState<SortBy>("changePercent");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
@@ -79,7 +79,7 @@ export default function WatchlistSection() {
     };
   }, [list]);
 
-  const displayItems = [...(list.length === 0 ? [] : items)].sort((a, b) => {
+  const displayItems = [...(items ?? [])].sort((a, b) => {
     const diff = sortBy === "name" ? a.name.localeCompare(b.name) : a[sortBy] - b[sortBy];
     return sortDir === "desc" ? -diff : diff;
   });
@@ -121,11 +121,22 @@ export default function WatchlistSection() {
         <p className="py-6 text-center text-sm text-(--text-muted)">
           點股票列表或個股頁面的 ☆ 即可加入關注清單，方便下次快速查看
         </p>
-      ) : displayItems.length === 0 ? (
+      ) : items === null ? (
         <div className="space-y-2">
           {Array.from({ length: Math.min(list.length, 4) }).map((_, i) => (
             <div key={i} className="h-8 animate-pulse rounded bg-(--page-plane)" />
           ))}
+        </div>
+      ) : displayItems.length === 0 ? (
+        <div className="py-4">
+          <p className="text-center text-sm text-(--text-muted)">目前無法取得關注股票的即時報價，可能是資料來源暫時無法連線</p>
+          <ul className="mt-3 flex flex-wrap justify-center gap-2 text-xs text-(--text-secondary)">
+            {list.map((w) => (
+              <li key={`${w.market}:${w.symbol}`} className="rounded-full border border-(--gridline) px-2.5 py-1">
+                {w.name}（{w.symbol}）
+              </li>
+            ))}
+          </ul>
         </div>
       ) : (
         <MarketTabs

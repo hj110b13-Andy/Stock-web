@@ -53,7 +53,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   );
 
   return (
-    <html lang="zh-Hant" className="h-full antialiased">
+    <html lang="zh-Hant" className="h-full antialiased" suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
       </head>
