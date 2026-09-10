@@ -1,9 +1,9 @@
 import Link from "next/link";
-import IndexCard from "@/components/IndexCard";
 import StockTable from "@/components/StockTable";
 import MarketTabs from "@/components/MarketTabs";
 import WatchlistSection from "@/components/WatchlistSection";
 import DailyBriefCard from "@/components/DailyBriefCard";
+import LiveIndices from "@/components/LiveIndices";
 import { getIndices, searchStocks } from "@/lib/data";
 import { getDailyBrief } from "@/lib/ai/brief";
 
@@ -64,8 +64,8 @@ export default async function HomePage() {
       <section>
         <h2 className="mb-3 text-lg font-semibold">大盤指數</h2>
         <MarketTabs
-          tw={<IndexGroup indices={twIndices} />}
-          us={<IndexGroup indices={usIndices} />}
+          tw={<LiveIndices market="TW" initialIndices={twIndices} />}
+          us={<LiveIndices market="US" initialIndices={usIndices} />}
         />
       </section>
 
@@ -90,19 +90,6 @@ export default async function HomePage() {
           點右下角的 AI 問答，直接用中文問「2330 最近走勢如何？」或「AAPL 現在多少錢？」
         </p>
       </section>
-    </div>
-  );
-}
-
-function IndexGroup({ indices }: { indices: Awaited<ReturnType<typeof getIndices>> }) {
-  if (indices.length === 0) {
-    return <p className="py-6 text-center text-sm text-(--text-muted)">大盤指數目前無法取得，請稍後再試</p>;
-  }
-  return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-      {indices.map((idx) => (
-        <IndexCard key={idx.symbol} index={idx} />
-      ))}
     </div>
   );
 }
