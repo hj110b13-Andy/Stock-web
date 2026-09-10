@@ -24,6 +24,19 @@ function cachedInMemory<T>(key: string, ttlMs: number, load: () => Promise<T>): 
   });
 }
 
+// In-flight request de-duplication ("single-flight"): a Next.js page like
+// the homepage fires off several `cached()` calls for the *same* key
+// (e.g. the daily brief and the homepage movers both ask for TW quotes)
+// essentially simultaneously. Without this, every one of them sees a cache
+// miss at the same instant — since none has written a result yet — and
+// each independently kicks off its own full TWSE/Yahoo fetch. For the TW
+// universe that meant a single page load could fire the *entire* batched
+// quote fetch 4-6x over, multiplying both latency (the page waits on the
+// slowest of many redundant fetches) and outbound request volume (raising
+// the odds of getting rate-limited) by that same factor. Concurrent callers
+// for the same key now share one in-flight promise instead.
+const inFlight = new Map<string, Promise<unknown>>();
+
 /**
  * TTL cache shared across serverless instances via Redis when configured
  * (see ./kv), otherwise a per-instance in-memory Map. Either backend fails
@@ -32,6 +45,17 @@ function cachedInMemory<T>(key: string, ttlMs: number, load: () => Promise<T>): 
  * to be the reason a page breaks.
  */
 export async function cached<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
+  const pending = inFlight.get(key);
+  if (pending) return pending as Promise<T>;
+
+  const promise = runCached(key, ttlMs, load).finally(() => {
+    inFlight.delete(key);
+  });
+  inFlight.set(key, promise);
+  return promise;
+}
+
+async function runCached<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
   if (!kvEnabled || !redis) {
     return cachedInMemory(key, ttlMs, load);
   }
