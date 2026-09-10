@@ -67,12 +67,15 @@ export async function fetchTwseQuote(stockNo: string): Promise<Quote> {
  * or time out under that load and silently fall back to mock data for the
  * whole list. One batched request is far more likely to actually succeed.
  *
- * Now that the universe can run into the hundreds of stocks (see
+ * Now that the universe can run into the low hundreds of stocks (see
  * getTwUniverse in ./universe), a single request would build an
  * enormous query string, so the symbol list is chunked into a handful of
- * parallel requests instead of one unbounded one.
+ * parallel requests instead of one unbounded one. Kept well under what
+ * MIS has been observed to accept in one request — better to fire a few
+ * more small parallel chunks than risk one oversized request getting
+ * truncated or rejected outright.
  */
-const QUOTE_BATCH_CHUNK_SIZE = 150;
+const QUOTE_BATCH_CHUNK_SIZE = 50;
 
 export async function fetchTwseQuotesBatch(stockNos: string[]): Promise<Map<string, Quote>> {
   const map = new Map<string, Quote>();

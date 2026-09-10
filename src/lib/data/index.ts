@@ -151,8 +151,16 @@ async function fetchMarketQuoteMap(market: Market): Promise<Map<string, Quote>> 
     // per-symbol attempt below instead
   }
 
+  // Only bother retrying individually when a small number slipped through
+  // the batch — if the batch failed wholesale or missed a lot of symbols,
+  // firing dozens+ of concurrent single-symbol requests on top of it risks
+  // getting the whole site rate-limited by TWSE/Yahoo (breaking unrelated
+  // single-stock lookups too), for a screen that only shows a handful of
+  // rows anyway. Those symbols are just omitted, same as any other
+  // unreachable quote.
+  const MAX_SINGLE_RETRIES = 15;
   const missing = pool.filter((e) => !map.has(e.symbol));
-  if (missing.length > 0) {
+  if (missing.length > 0 && missing.length <= MAX_SINGLE_RETRIES) {
     const singles = await Promise.all(
       missing.map(async (entry): Promise<[string, Quote] | null> => {
         try {
@@ -257,10 +265,10 @@ export interface MomentumItem extends SearchItem {
 const MOMENTUM_TTL_MS = 5 * 60_000;
 // Computing a signal requires a chart fetch per candidate stock, so the
 // candidate pool is capped to the biggest movers by |change%| before doing
-// that work — with a several-hundred-stock TW universe, running the chart
-// fetch for every single one would mean hundreds of concurrent requests to
-// TWSE for a board that only ever displays the top ~10 results anyway.
-const MOMENTUM_CANDIDATE_LIMIT = 150;
+// that work — a board that only ever displays the top ~10 results doesn't
+// need to chart-fetch the entire universe, and keeping this small bounds
+// how many concurrent requests hit TWSE/Yahoo for this one screen.
+const MOMENTUM_CANDIDATE_LIMIT = 25;
 
 /**
  * Stocks where 2+ objective technical signals (see lib/signals.ts) are

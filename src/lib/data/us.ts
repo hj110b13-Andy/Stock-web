@@ -109,7 +109,7 @@ interface YahooQuoteResponse {
  * under concurrent load. Chunked the same way as the TWSE batch fetch so
  * a larger universe doesn't build one oversized query string.
  */
-const QUOTE_BATCH_CHUNK_SIZE = 150;
+const QUOTE_BATCH_CHUNK_SIZE = 50;
 
 export async function fetchUsQuotesBatch(symbols: string[]): Promise<Map<string, Quote>> {
   const map = new Map<string, Quote>();

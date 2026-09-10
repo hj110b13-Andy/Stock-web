@@ -182,11 +182,15 @@ export const US_UNIVERSE: UniverseEntry[] = [
 const TW_UNIVERSE_TTL_MS = 24 * 60 * 60_000; // official company list changes rarely; refresh once a day
 // Bounds how many TW symbols downstream code batch-fetches quotes/charts
 // for at once — TWSE lists roughly 1000 companies, and rankings/momentum
-// screens need to stay responsive rather than firing thousands of
-// concurrent requests. Capped, not fabricated: everything past the cap
-// simply isn't included, the same way an unreachable quote is omitted
-// rather than replaced with a guess.
-const MAX_TW_UNIVERSE = 400;
+// screens need to stay responsive rather than firing hundreds of concurrent
+// requests. Capped, not fabricated: everything past the cap simply isn't
+// included, the same way an unreachable quote is omitted rather than
+// replaced with a guess. Kept deliberately conservative (not the full
+// ~1000) because a burst of hundreds of concurrent requests to TWSE's
+// unofficial MIS endpoint risks getting the whole site rate-limited —
+// including single-stock lookups that have nothing to do with this list —
+// rather than just leaving this particular screen slow.
+const MAX_TW_UNIVERSE = 100;
 
 // Kept in sync (best-effort, in the background) so the synchronous
 // findInUniverse/sectorsFor helpers below get the fuller official list as
