@@ -31,7 +31,10 @@ function exportCsv(items: SearchItem[]) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `我的關注_${new Date().toISOString().slice(0, 10)}.csv`;
+  // Some browsers silently drop a non-ASCII `download` attribute and fall
+  // back to a bare "download" filename — keep it ASCII-only (the CSV
+  // *content* is still full Traditional Chinese, only the filename isn't).
+  a.download = `stockradar-watchlist-${new Date().toISOString().slice(0, 10)}.csv`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -79,10 +82,17 @@ export default function WatchlistSection() {
     };
   }, [list]);
 
-  const displayItems = [...(items ?? [])].sort((a, b) => {
-    const diff = sortBy === "name" ? a.name.localeCompare(b.name) : a[sortBy] - b[sortBy];
-    return sortDir === "desc" ? -diff : diff;
-  });
+  // Filtered against the *current* list (not just whatever the last fetch
+  // returned) so removing every watched stock immediately clears the sort/
+  // export controls and the export button, instead of them lingering with
+  // stale data from before the list was emptied.
+  const watchedKeys = new Set(list.map((w) => `${w.market}:${w.symbol}`));
+  const displayItems = (items ?? [])
+    .filter((i) => watchedKeys.has(`${i.market}:${i.symbol}`))
+    .sort((a, b) => {
+      const diff = sortBy === "name" ? a.name.localeCompare(b.name) : a[sortBy] - b[sortBy];
+      return sortDir === "desc" ? -diff : diff;
+    });
 
   return (
     <section className="rounded-lg border border-(--gridline) bg-(--surface-1) p-4">
