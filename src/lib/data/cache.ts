@@ -63,11 +63,16 @@ function evictMemory(): void {
  * read as a miss, so an old-format key just gets recomputed once.
  */
 interface CacheEnvelope {
+  /** the cached value */
   v: unknown;
+  /** epoch ms this value expires at, so an instance that reads it from the
+   *  shared cache keeps its own copy only for the time that's actually left
+   *  rather than restarting the TTL and serving it for up to twice as long */
+  e: number;
 }
 
 function isEnvelope(value: unknown): value is CacheEnvelope {
-  return typeof value === "object" && value !== null && "v" in value;
+  return typeof value === "object" && value !== null && "v" in value && "e" in value;
 }
 
 // In-flight request de-duplication ("single-flight"): a Next.js page like
@@ -149,7 +154,8 @@ async function runCached<T>(key: string, ttlMs: number, load: () => Promise<T>):
     try {
       const hit = await redis.get<CacheEnvelope>(key);
       if (isEnvelope(hit)) {
-        writeMemory(key, hit.v, ttlMs);
+        const remainingMs = hit.e - Date.now();
+        if (remainingMs > 0) writeMemory(key, hit.v, remainingMs);
         return hit.v as T;
       }
     } catch {
@@ -170,7 +176,9 @@ async function runCached<T>(key: string, ttlMs: number, load: () => Promise<T>):
       console.error(`[cache] not storing a ${value.constructor.name} in Redis for key "${key}" — JSON can't represent it; use cachedMap`);
     } else {
       try {
-        await redis.set(key, { v: value } satisfies CacheEnvelope, { ex: Math.max(1, Math.round(ttlMs / 1000)) });
+        await redis.set(key, { v: value, e: Date.now() + ttlMs } satisfies CacheEnvelope, {
+          ex: Math.max(1, Math.round(ttlMs / 1000)),
+        });
       } catch {
         // best-effort; a shared-cache write failure shouldn't break the response
       }
