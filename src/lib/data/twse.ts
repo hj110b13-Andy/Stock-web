@@ -110,18 +110,55 @@ interface StockDayResponse {
   data?: string[][];
 }
 
+/**
+ * "Today" in Taipei, which is the calendar TWSE dates its data by. The
+ * server runs in UTC, so between 00:00 and 08:00 Taipei time a plain
+ * `new Date()` is still on the previous day — and on the 1st of a month
+ * that means the current month is never even requested, silently dropping
+ * the newest trading day from every TW chart during those hours.
+ */
+function taipeiToday(): { year: number; month: number; day: number } {
+  const [y, m, d] = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei" })
+    .format(new Date())
+    .split("-")
+    .map((n) => parseInt(n, 10));
+  return { year: y, month: m, day: d };
+}
+
+/** `months` before the given day, clamped so e.g. 3/31 minus one month is
+ *  2/28 rather than rolling forward into March the way setMonth() would. */
+function monthsBefore(year: number, month: number, day: number, months: number): string {
+  const lastDayOfTarget = new Date(Date.UTC(year, month - months, 0)).getUTCDate();
+  return new Date(Date.UTC(year, month - 1 - months, Math.min(day, lastDayOfTarget)))
+    .toISOString()
+    .slice(0, 10);
+}
+
 export async function fetchTwseCandles(stockNo: string, range: ChartRange): Promise<Candle[]> {
   const months = RANGE_MONTHS[range];
+  const { year, month, day } = taipeiToday();
+
+  // STOCK_DAY only serves whole calendar months, so asking for exactly
+  // `months` of them yields a window that is short by however far into the
+  // current month we are: on the 3rd of a month the "1個月" chart was
+  // 2 trading days long (and computeSignals needs 5 bars, so the technical
+  // signals silently vanished too). Fetch one extra month back and trim to
+  // the real trailing window, so "1個月" is always about a month of data
+  // regardless of what day it is.
+  const cursor = new Date(Date.UTC(year, month - 1, 1));
   const requests: Promise<Candle[]>[] = [];
-  const cursor = new Date();
-  cursor.setDate(1);
-  for (let i = 0; i < months; i++) {
-    const dateParam = `${cursor.getFullYear()}${pad(cursor.getMonth() + 1)}01`;
-    requests.push(fetchMonth(stockNo, dateParam));
-    cursor.setMonth(cursor.getMonth() - 1);
+  for (let i = 0; i <= months; i++) {
+    requests.push(fetchMonth(stockNo, `${cursor.getUTCFullYear()}${pad(cursor.getUTCMonth() + 1)}01`));
+    cursor.setUTCMonth(cursor.getUTCMonth() - 1);
   }
+
+  const cutoffIso = monthsBefore(year, month, day, months);
+
   const monthly = await Promise.all(requests);
-  const merged = monthly.flat().sort((a, b) => a.time.localeCompare(b.time));
+  const merged = monthly
+    .flat()
+    .filter((c) => c.time >= cutoffIso)
+    .sort((a, b) => a.time.localeCompare(b.time));
   if (merged.length === 0) throw new Error(`No TWSE candles for ${stockNo}`);
   return merged;
 }

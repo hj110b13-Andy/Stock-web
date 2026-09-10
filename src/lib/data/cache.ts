@@ -196,6 +196,34 @@ export function chunk<T>(items: T[], size: number): T[][] {
   return out;
 }
 
+/**
+ * Promise.all over a list, but with at most `limit` workers running at a
+ * time — the same reason the batch-quote fetches exist. A plain
+ * `Promise.all(candidates.map(getChart))` fans out per candidate, and each
+ * TW chart fetch itself fans out per calendar month, so a 25-candidate
+ * screen fired ~100 simultaneous requests at TWSE. That is exactly the
+ * burst that gets the whole site throttled — including the single-stock
+ * lookups that have nothing to do with this screen. Results stay in input
+ * order so callers can still pair them up with their inputs.
+ */
+export async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const runners = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    for (;;) {
+      const index = cursor++;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index], index);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
 export async function fetchWithTimeout(url: string, timeoutMs = 4000, init?: RequestInit): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);

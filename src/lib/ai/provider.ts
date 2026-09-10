@@ -31,8 +31,22 @@ export async function callAiProviders(system: string, messages: ChatTurn[]): Pro
 
   // Bound how much history we forward regardless of what the caller sends,
   // to keep latency/cost predictable on a long-running conversation.
-  const turns = messages.slice(-MAX_HISTORY_TURNS);
+  //
+  // Then drop any leading assistant turns the window cut into: both
+  // providers require the conversation to *start* with a user turn
+  // (Anthropic rejects it outright, Gemini likewise). History arrives as
+  // user/assistant pairs, so once a chat passed ~5 exchanges this slice
+  // began at an assistant turn and every AI call 400'd — the widget quietly
+  // stopped answering and fell back to the canned "raw data" reply for the
+  // rest of the conversation, which reads as the AI having broken.
+  let turns = messages.slice(-MAX_HISTORY_TURNS);
+  const firstUser = turns.findIndex((t) => t.role === "user");
+  turns = firstUser <= 0 ? turns : turns.slice(firstUser);
+
   const failures: string[] = [];
+  if (turns.length === 0) {
+    return { answer: "", usedAi: false, failureReason: "沒有可送出的對話內容。" };
+  }
 
   if (geminiKey) {
     try {

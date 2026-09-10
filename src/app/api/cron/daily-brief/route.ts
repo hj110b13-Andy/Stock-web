@@ -21,6 +21,14 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  const brief = await getDailyBrief();
-  return NextResponse.json({ ok: true, usedAi: brief.usedAi, generatedAt: brief.generatedAt });
+  try {
+    const brief = await getDailyBrief();
+    return NextResponse.json({ ok: true, usedAi: brief.usedAi, generatedAt: brief.generatedAt });
+  } catch (err) {
+    // A failed warm-up is not an outage: the brief is regenerated lazily on
+    // the first page view anyway. Report it as a failed run so it shows up
+    // in Vercel's cron log instead of as an unhandled 500 with a stack.
+    console.error("[cron] daily brief warm-up failed:", err);
+    return NextResponse.json({ ok: false, error: "快報預先產生失敗" }, { status: 503 });
+  }
 }

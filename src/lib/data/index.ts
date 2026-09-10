@@ -1,4 +1,4 @@
-import { cached, cachedMap } from "./cache";
+import { cached, cachedMap, mapWithConcurrency } from "./cache";
 import type { ChartRange, ChartResponse, Fundamentals, IndexQuote, Market, Quote, SearchItem } from "./types";
 import { US_UNIVERSE, findInUniverse, getTwUniverse, UniverseEntry } from "./universe";
 import { fetchTwseCandles, fetchTwseFundamentalsAll, fetchTwseQuote, fetchTwseQuotesBatch } from "./twse";
@@ -271,6 +271,10 @@ const MOMENTUM_TTL_MS = 5 * 60_000;
 // need to chart-fetch the entire universe, and keeping this small bounds
 // how many concurrent requests hit TWSE/Yahoo for this one screen.
 const MOMENTUM_CANDIDATE_LIMIT = 25;
+// How many candidates are charted at once. A TW chart fetch is itself
+// several requests (one per calendar month), so this is the real knob on
+// how hard this screen hits the upstreams.
+const MOMENTUM_CHART_CONCURRENCY = 4;
 
 /**
  * Stocks where 2+ objective technical signals (see lib/signals.ts) are
@@ -290,8 +294,13 @@ export async function getMultiSignalStocks(market: Market, minSignals = 2): Prom
       .sort((a, b) => Math.abs(quoteMap.get(b.symbol)!.changePercent) - Math.abs(quoteMap.get(a.symbol)!.changePercent))
       .slice(0, MOMENTUM_CANDIDATE_LIMIT);
 
-    const results = await Promise.all(
-      candidates.map(async (entry): Promise<MomentumItem | null> => {
+    // Bounded, not Promise.all: each getChart() on a TW symbol fans out into
+    // one request per calendar month, so charting all 25 candidates at once
+    // meant ~100 simultaneous requests to TWSE for this single screen.
+    const results = await mapWithConcurrency(
+      candidates,
+      MOMENTUM_CHART_CONCURRENCY,
+      async (entry): Promise<MomentumItem | null> => {
         const quote = quoteMap.get(entry.symbol)!;
         const chart = await getChart(entry.symbol, "3m", entry.market);
         if (!chart) return null;
@@ -307,7 +316,7 @@ export async function getMultiSignalStocks(market: Market, minSignals = 2): Prom
           volume: quote.volume,
           signals,
         };
-      })
+      }
     );
 
     return results

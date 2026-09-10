@@ -1,9 +1,7 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
-
-const STORAGE_KEY = "stockradar:theme";
-const THEME_CHANGED_EVENT = "stockradar:theme-changed";
+import { THEME_CHANGED_EVENT, THEME_STORAGE_KEY as STORAGE_KEY, subscribeToTheme } from "@/lib/theme";
 
 function getSnapshot(): "light" | "dark" {
   if (typeof document === "undefined") return "light";
@@ -18,13 +16,11 @@ function getServerSnapshot(): "light" | "dark" {
   return "light";
 }
 
-function subscribe(callback: () => void) {
-  window.addEventListener(THEME_CHANGED_EVENT, callback);
-  return () => window.removeEventListener(THEME_CHANGED_EVENT, callback);
-}
-
 export default function ThemeToggle() {
-  const theme = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  // subscribeToTheme also watches the OS preference, so the icon stays
+  // correct when the visitor has never picked a theme explicitly and their
+  // system flips to dark mode.
+  const theme = useSyncExternalStore(subscribeToTheme, getSnapshot, getServerSnapshot);
 
   function toggle() {
     const next = theme === "dark" ? "light" : "dark";

@@ -64,13 +64,31 @@ export default function ChatWidget() {
             <div>
               <p className="font-semibold text-sm">AI 股票問答</p>
               {contextSymbol && (
-                <p className="text-xs text-(--text-muted)">目前聚焦：{contextSymbol.name}（{contextSymbol.symbol}）</p>
+                // Clearable: the widget lives in the root layout, so the
+                // focus set by "問 AI 關於 X" outlived navigating away from
+                // that stock's page. Asking "今天大盤表現如何？" from the
+                // homepage afterwards was still being answered as a question
+                // about X, with no way to undo it short of a reload.
+                <p className="flex items-center gap-1 text-xs text-(--text-muted)">
+                  目前聚焦：{contextSymbol.name}（{contextSymbol.symbol}）
+                  <button
+                    onClick={() => setContextSymbol(null)}
+                    className="rounded px-1 leading-none hover:bg-(--page-plane) hover:text-(--text-primary)"
+                    aria-label="取消聚焦此股票"
+                    title="取消聚焦，改問一般問題"
+                  >
+                    ✕
+                  </button>
+                </p>
               )}
             </div>
             <div className="flex items-center gap-2">
               {messages.length > 0 && (
                 <button
-                  onClick={() => setMessages([])}
+                  onClick={() => {
+                    setMessages([]);
+                    setContextSymbol(null);
+                  }}
                   className="text-xs text-(--text-muted) hover:text-(--text-primary)"
                   title="清空對話"
                 >

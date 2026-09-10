@@ -7,6 +7,10 @@ import MarketStatusBadge from "@/components/MarketStatusBadge";
 import { getMarketStatus } from "@/lib/marketStatus";
 import type { Market, SearchItem } from "@/lib/data";
 
+// Short enough that a filter toggle still feels instant, long enough that
+// typing a keyword or a price doesn't fire a search per character.
+const SEARCH_DEBOUNCE_MS = 250;
+
 type ChangePreset = "all" | "gainers" | "losers" | "big-gainers" | "big-losers";
 type SortBy = "changePercent" | "volume" | "price";
 type SortDir = "asc" | "desc";
@@ -107,12 +111,21 @@ function MarketSection({
     if (cfg.min !== undefined) params.set("min", String(cfg.min));
     if (cfg.max !== undefined) params.set("max", String(cfg.max));
 
+    // Debounced: the keyword and price boxes re-run this on every
+    // keystroke, so typing "2330" used to fire four full searches (and
+    // typing a price, one per digit) — each one re-filtering the whole
+    // universe server-side — with only the last result ever displayed.
     const controller = new AbortController();
-    fetch(`/api/search?${params.toString()}`, { signal: controller.signal })
-      .then((res) => res.json())
-      .then((data) => setItems(data.items ?? []))
-      .catch(() => {});
-    return () => controller.abort();
+    const timer = setTimeout(() => {
+      fetch(`/api/search?${params.toString()}`, { signal: controller.signal })
+        .then((res) => res.json())
+        .then((data) => setItems(data.items ?? []))
+        .catch(() => {});
+    }, SEARCH_DEBOUNCE_MS);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
   }, [market, sectors, query, preset, minPrice, maxPrice, sortBy, sortDir]);
 
   function toggleSector(s: string) {

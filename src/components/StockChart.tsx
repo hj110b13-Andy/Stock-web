@@ -14,7 +14,19 @@ import {
 import type { Candle, ChartRange } from "@/lib/data";
 import { computeSignals } from "@/lib/signals";
 import { formatPrice, formatVolume } from "@/lib/format";
+import { readChartPalette, subscribeToTheme } from "@/lib/theme";
 import SignalTags from "./SignalTags";
+
+// Only used before the first client-side read of the CSS custom properties.
+const FALLBACK_PALETTE = {
+  textSecondary: "#52514e",
+  gridline: "#e1e0d9",
+  priceUp: "#e34948",
+  priceDown: "#008300",
+  priceUpSoft: "#e3494880",
+  priceDownSoft: "#00830080",
+  textMuted: "#898781",
+};
 
 const RANGE_LABELS: Record<ChartRange, string> = { "1m": "1個月", "3m": "3個月", "6m": "6個月", "1y": "1年" };
 const RANGES: ChartRange[] = ["1m", "3m", "6m", "1y"];
@@ -47,6 +59,13 @@ export default function StockChart({
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const candleMapRef = useRef<Map<string, Candle>>(new Map());
   const currency = market === "TW" ? "TWD" : "USD";
+  // Live values for the crosshair callback, which is registered once but
+  // has to keep reflecting the current theme and the current symbol.
+  const paletteRef = useRef(FALLBACK_PALETTE);
+  const formatRef = useRef({ currency, market });
+  useEffect(() => {
+    formatRef.current = { currency, market };
+  }, [currency, market]);
 
   useEffect(() => {
     let cancelled = false;
@@ -74,38 +93,35 @@ export default function StockChart({
 
   useEffect(() => {
     if (!containerRef.current) return;
-    const styles = getComputedStyle(document.documentElement);
+    const palette = readChartPalette();
+    paletteRef.current = palette;
     const chart = createChart(containerRef.current, {
       layout: {
         background: { type: ColorType.Solid, color: "transparent" },
-        textColor: styles.getPropertyValue("--text-secondary").trim() || "#52514e",
+        textColor: palette.textSecondary,
       },
       grid: {
-        vertLines: { color: styles.getPropertyValue("--gridline").trim() || "#e1e0d9" },
-        horzLines: { color: styles.getPropertyValue("--gridline").trim() || "#e1e0d9" },
+        vertLines: { color: palette.gridline },
+        horzLines: { color: palette.gridline },
       },
-      rightPriceScale: { borderColor: styles.getPropertyValue("--gridline").trim() || "#e1e0d9" },
-      timeScale: { borderColor: styles.getPropertyValue("--gridline").trim() || "#e1e0d9" },
+      rightPriceScale: { borderColor: palette.gridline },
+      timeScale: { borderColor: palette.gridline },
       autoSize: true,
     });
 
-    const priceUp = styles.getPropertyValue("--price-up").trim() || "#e34948";
-    const priceDown = styles.getPropertyValue("--price-down").trim() || "#008300";
-    const textMuted = styles.getPropertyValue("--text-muted").trim() || "#898781";
-
     const series = chart.addSeries(CandlestickSeries, {
-      upColor: priceUp,
-      downColor: priceDown,
-      borderUpColor: priceUp,
-      borderDownColor: priceDown,
-      wickUpColor: priceUp,
-      wickDownColor: priceDown,
+      upColor: palette.priceUp,
+      downColor: palette.priceDown,
+      borderUpColor: palette.priceUp,
+      borderDownColor: palette.priceDown,
+      wickUpColor: palette.priceUp,
+      wickDownColor: palette.priceDown,
     });
 
     const volume = chart.addSeries(HistogramSeries, {
       priceFormat: { type: "volume" },
       priceScaleId: "volume",
-      color: textMuted,
+      color: palette.textMuted,
     });
     chart.priceScale("volume").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
     series.priceScale().applyOptions({ scaleMargins: { top: 0.06, bottom: 0.22 } });
@@ -129,6 +145,12 @@ export default function StockChart({
         return;
       }
 
+      // Read through refs, never the values captured when the chart was
+      // created: this callback outlives both a theme switch and a change of
+      // symbol/market, and a stale capture would draw a light-theme tooltip
+      // over a dark chart, or format a US price with TW 張/TWD rules.
+      const { priceUp, priceDown, textMuted } = paletteRef.current;
+      const { currency, market } = formatRef.current;
       const up = candle.close >= candle.open;
       const dirColor = up ? priceUp : priceDown;
       tooltip.innerHTML = `
@@ -160,9 +182,45 @@ export default function StockChart({
       seriesRef.current = null;
       volumeRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- currency intentionally not re-subscribed per-value; tooltip reads latest via closure over refs
+    // Created once and never re-subscribed: the crosshair callback reads
+    // the current palette and symbol formatting through refs instead.
   }, []);
 
+  // The chart paints itself imperatively, so unlike the rest of the page it
+  // does not follow a theme switch on its own — without this it keeps the
+  // palette that was in effect when it was created, leaving light-grey
+  // gridlines and axis labels sitting on the dark surface (and vice versa).
+  const [themeTick, setThemeTick] = useState(0);
+  useEffect(() => subscribeToTheme(() => setThemeTick((t) => t + 1)), []);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    const series = seriesRef.current;
+    const volume = volumeRef.current;
+    if (!chart || !series || !volume) return;
+    const palette = readChartPalette();
+    paletteRef.current = palette;
+    chart.applyOptions({
+      layout: { textColor: palette.textSecondary },
+      grid: { vertLines: { color: palette.gridline }, horzLines: { color: palette.gridline } },
+      rightPriceScale: { borderColor: palette.gridline },
+      timeScale: { borderColor: palette.gridline },
+    });
+    series.applyOptions({
+      upColor: palette.priceUp,
+      downColor: palette.priceDown,
+      borderUpColor: palette.priceUp,
+      borderDownColor: palette.priceDown,
+      wickUpColor: palette.priceUp,
+      wickDownColor: palette.priceDown,
+    });
+    volume.applyOptions({ color: palette.textMuted });
+  }, [themeTick]);
+
+  // Shape only — the volume bars' colours are theme-dependent and so are
+  // applied in the effect below, which runs after the palette has been
+  // refreshed. Deriving them here instead would read the previous palette,
+  // since render happens before effects, leaving the bars one toggle behind.
   const chartData = useMemo(() => {
     if (!candles) return null;
     return {
@@ -176,7 +234,7 @@ export default function StockChart({
       volume: candles.map((c) => ({
         time: c.time as unknown as UTCTimestamp,
         value: c.volume,
-        color: c.close >= c.open ? "rgba(227,73,72,0.5)" : "rgba(0,131,0,0.5)",
+        rising: c.close >= c.open,
       })),
     };
   }, [candles]);
@@ -187,10 +245,17 @@ export default function StockChart({
 
   useEffect(() => {
     if (!chartData || !seriesRef.current || !volumeRef.current || !chartRef.current) return;
+    const { priceUpSoft, priceDownSoft } = paletteRef.current;
     seriesRef.current.setData(chartData.candles);
-    volumeRef.current.setData(chartData.volume);
+    volumeRef.current.setData(
+      chartData.volume.map((v) => ({
+        time: v.time,
+        value: v.value,
+        color: v.rising ? priceUpSoft : priceDownSoft,
+      }))
+    );
     chartRef.current.timeScale().fitContent();
-  }, [chartData]);
+  }, [chartData, themeTick]);
 
   const signals = useMemo(
     () => (candles ? computeSignals(candles, currentPrice, range) : []),

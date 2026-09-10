@@ -203,12 +203,42 @@ let twUniverseSnapshot: UniverseEntry[] = TW_UNIVERSE_SEED;
  * small hand-picked list. Falls back to the seed list if the official
  * endpoint is unreachable — never a fabricated one.
  */
+/**
+ * Applies MAX_TW_UNIVERSE without letting the cap decide *which* stocks
+ * survive by accident. TWSE's listing comes back ordered by 公司代號, so a
+ * plain `slice(0, 100)` keeps codes 1101-~1800 (水泥/食品/塑膠/紡織…) and
+ * drops every stock a Taiwanese user actually looks for — 2330 台積電,
+ * 2317 鴻海, 2454 聯發科, 2412 中華電 and the whole 28xx 金融 block are all
+ * above the cut. That silently emptied the TW side of the site of anything
+ * recognizable: 焦點排行, 漲跌幅榜, 成交量榜, 技術訊號共振股 and the daily
+ * brief were ranking only obscure traditional-industry small caps.
+ *
+ * So the hand-curated seed (the well-known large caps) is placed first and
+ * the rest of the official list fills the remaining slots. Entries still
+ * carry TWSE's own official name/industry — the seed only decides priority,
+ * never the data itself, and a seed symbol that isn't actually listed
+ * anymore simply doesn't appear.
+ */
+function capUniverse(companies: UniverseEntry[]): UniverseEntry[] {
+  const official = new Map(companies.map((e) => [e.symbol, e]));
+  const picked = new Map<string, UniverseEntry>();
+  for (const seed of TW_UNIVERSE_SEED) {
+    const match = official.get(seed.symbol);
+    if (match) picked.set(match.symbol, match);
+  }
+  for (const entry of companies) {
+    if (picked.size >= MAX_TW_UNIVERSE) break;
+    if (!picked.has(entry.symbol)) picked.set(entry.symbol, entry);
+  }
+  return Array.from(picked.values()).slice(0, MAX_TW_UNIVERSE);
+}
+
 export async function getTwUniverse(): Promise<UniverseEntry[]> {
   const { fetchTwseListedCompanies } = await import("./twse");
   const result = await cached("tw-universe-full", TW_UNIVERSE_TTL_MS, async () => {
     try {
       const companies = await fetchTwseListedCompanies();
-      return companies.length > 0 ? companies.slice(0, MAX_TW_UNIVERSE) : TW_UNIVERSE_SEED;
+      return companies.length > 0 ? capUniverse(companies) : TW_UNIVERSE_SEED;
     } catch {
       return TW_UNIVERSE_SEED;
     }

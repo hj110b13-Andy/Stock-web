@@ -5,6 +5,7 @@ import ChatWidget from "@/components/ChatWidget";
 import AuthProvider from "@/components/AuthProvider";
 import WatchlistSync from "@/components/WatchlistSync";
 import { SITE_NAME, SITE_URL } from "@/lib/site";
+import { THEME_STORAGE_KEY } from "@/lib/theme";
 
 const TITLE = `${SITE_NAME}｜台股美股即時查詢與 AI 問答`;
 const DESCRIPTION = "免費公開的股票研究網站：即時查詢台股與美股報價、互動走勢圖表、篩選排行，並可用 AI 問答快速掌握個股情報。";
@@ -30,7 +31,11 @@ export const metadata: Metadata = {
   robots: { index: true, follow: true },
 };
 
-const THEME_INIT_SCRIPT = `(function(){try{var t=localStorage.getItem('stockradar:theme');if(t==='light'||t==='dark'){document.documentElement.setAttribute('data-theme',t);}}catch(e){}})();`;
+// Runs before first paint so a dark-mode visitor never sees a light flash.
+// Keyed off the shared constant so it can't drift from what ThemeToggle writes.
+const THEME_INIT_SCRIPT = `(function(){try{var t=localStorage.getItem(${JSON.stringify(
+  THEME_STORAGE_KEY
+)});if(t==='light'||t==='dark'){document.documentElement.setAttribute('data-theme',t);}}catch(e){}})();`;
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   // Google sign-in needs all three; if any is missing, auth is fully
