@@ -2,7 +2,9 @@ import type { Metadata } from "next";
 import StockTable from "@/components/StockTable";
 import MarketTabs from "@/components/MarketTabs";
 import MomentumTable from "@/components/MomentumTable";
+import MarketStatusBadge from "@/components/MarketStatusBadge";
 import { searchStocks, getMultiSignalStocks } from "@/lib/data";
+import { getMarketStatus } from "@/lib/marketStatus";
 
 export const revalidate = 0;
 
@@ -24,6 +26,9 @@ export default async function HighlightsPage() {
     getMultiSignalStocks("US"),
   ]);
 
+  const twStatus = getMarketStatus("TW");
+  const usStatus = getMarketStatus("US");
+
   return (
     <div className="space-y-8">
       <div>
@@ -31,6 +36,15 @@ export default async function HighlightsPage() {
         <p className="mt-1 text-sm text-(--text-secondary)">
           台股、美股分開排名，快速掃到市場現在在關注什麼。純粹依數據排序，不代表買賣建議。
         </p>
+        <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-(--text-muted)">
+          <span className="flex items-center gap-1.5">
+            台股 <MarketStatusBadge status={twStatus} />
+          </span>
+          <span className="flex items-center gap-1.5">
+            美股 <MarketStatusBadge status={usStatus} />
+          </span>
+          {(twStatus === "closed" || usStatus === "closed") && <span>非交易時段的市場，榜單為最近一次收盤資訊</span>}
+        </div>
       </div>
 
       <Board

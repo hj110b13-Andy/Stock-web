@@ -4,8 +4,11 @@ import MarketTabs from "@/components/MarketTabs";
 import WatchlistSection from "@/components/WatchlistSection";
 import DailyBriefCard from "@/components/DailyBriefCard";
 import LiveIndices from "@/components/LiveIndices";
+import MarketStatusBadge from "@/components/MarketStatusBadge";
 import { getIndices, searchStocks } from "@/lib/data";
+import type { Market, SearchItem } from "@/lib/data";
 import { getDailyBrief } from "@/lib/ai/brief";
+import { getMarketStatus } from "@/lib/marketStatus";
 
 export const revalidate = 0;
 
@@ -78,8 +81,8 @@ export default async function HomePage() {
             </Link>
           </div>
           <MarketTabs
-            tw={<StockTable items={twMovers.slice(0, 8)} />}
-            us={<StockTable items={usMovers.slice(0, 8)} />}
+            tw={<MoversBoard market="TW" items={twMovers.slice(0, 8)} />}
+            us={<MoversBoard market="US" items={usMovers.slice(0, 8)} />}
           />
         </div>
       </section>
@@ -90,6 +93,21 @@ export default async function HomePage() {
           點右下角的 AI 問答，直接用中文問「2330 最近走勢如何？」或「AAPL 現在多少錢？」
         </p>
       </section>
+    </div>
+  );
+}
+
+function MoversBoard({ market, items }: { market: Market; items: SearchItem[] }) {
+  const status = getMarketStatus(market);
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between">
+        <MarketStatusBadge status={status} />
+        {status === "closed" && (
+          <p className="text-xs text-(--text-muted)">非交易時段，以下為最近一次收盤資訊</p>
+        )}
+      </div>
+      <StockTable items={items} />
     </div>
   );
 }

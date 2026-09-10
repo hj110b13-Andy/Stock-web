@@ -179,6 +179,57 @@ interface CompanyRow {
 }
 
 /**
+ * t187ap03_L's 產業別 field is TWSE's own two-digit industry classification
+ * *code* (e.g. "01"), not the category name, even though it comes back as a
+ * string that looks like it could be either — confirmed by cross-checking
+ * real symbols against this table (e.g. 1101 台泥/1102 亞泥/1103 嘉泥, all
+ * cement companies, all coded "01"). Maps to the official category names
+ * per TWSE's 上市公司產業類別劃分暨調整要點. An unrecognized code (a new
+ * category TWSE adds later) falls back to "未分類" rather than showing the
+ * raw code.
+ */
+const TWSE_INDUSTRY_NAMES: Record<string, string> = {
+  "01": "水泥工業",
+  "02": "食品工業",
+  "03": "塑膠工業",
+  "04": "紡織纖維",
+  "05": "電機機械",
+  "06": "電器電纜",
+  "08": "玻璃陶瓷",
+  "09": "造紙工業",
+  "10": "鋼鐵工業",
+  "11": "橡膠工業",
+  "12": "汽車工業",
+  "13": "電子工業",
+  "14": "建材營造業",
+  "15": "航運業",
+  "16": "觀光事業",
+  "17": "金融保險業",
+  "18": "貿易百貨業",
+  "19": "綜合",
+  "20": "其他業",
+  "21": "化學工業",
+  "22": "生技醫療業",
+  "23": "油電燃氣業",
+  "24": "半導體業",
+  "25": "電腦及週邊設備業",
+  "26": "光電業",
+  "27": "通信網路業",
+  "28": "電子零組件業",
+  "29": "電子通路業",
+  "30": "資訊服務業",
+  "31": "其他電子業",
+  "32": "文化創意業",
+  "33": "農業科技業",
+  "34": "電子商務業",
+  "35": "綠能環保業",
+  "36": "數位雲端業",
+  "37": "運動休閒業",
+  "38": "居家生活業",
+  "80": "存託憑證",
+};
+
+/**
  * TWSE's official open-data endpoint for every listed (上市) company's
  * basic profile — code, short name, industry category. Used to build the
  * full TW stock universe instead of a small hand-curated list (see
@@ -191,13 +242,16 @@ export async function fetchTwseListedCompanies(): Promise<UniverseEntry[]> {
   const rows = (await res.json()) as CompanyRow[];
   return rows
     .filter((r) => r.公司代號 && r.公司簡稱)
-    .map((r) => ({
-      symbol: r.公司代號.trim(),
-      market: "TW" as const,
-      name: r.公司簡稱.trim(),
-      sector: r.產業別?.trim() || "未分類",
-      currency: "TWD",
-    }));
+    .map((r) => {
+      const code = r.產業別?.trim() ?? "";
+      return {
+        symbol: r.公司代號.trim(),
+        market: "TW" as const,
+        name: r.公司簡稱.trim(),
+        sector: TWSE_INDUSTRY_NAMES[code] ?? "未分類",
+        currency: "TWD",
+      };
+    });
 }
 
 function rocToIso(roc: string): string {

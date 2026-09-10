@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import StockTable from "@/components/StockTable";
 import MarketTabs from "@/components/MarketTabs";
+import MarketStatusBadge from "@/components/MarketStatusBadge";
+import { getMarketStatus } from "@/lib/marketStatus";
 import type { Market, SearchItem } from "@/lib/data";
 
 type ChangePreset = "all" | "gainers" | "losers" | "big-gainers" | "big-losers";
@@ -168,9 +170,12 @@ function MarketSection({
         </div>
       ) : (
         <>
-          <p className="text-xs text-(--text-muted)">
-            共 {items.length} 筆{items.length === 0 ? "（可能是篩選條件過嚴，或即時資料暫時無法取得）" : ""}
-          </p>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-(--text-muted)">
+            <MarketStatusBadge status={getMarketStatus(market)} />
+            <span>
+              共 {items.length} 筆{items.length === 0 ? "（可能是篩選條件過嚴，或即時資料暫時無法取得）" : ""}
+            </span>
+          </div>
           <StockTable items={items} />
         </>
       )}
