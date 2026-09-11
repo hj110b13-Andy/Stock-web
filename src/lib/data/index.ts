@@ -1,6 +1,6 @@
 import { cached, cachedMap, mapWithConcurrency } from "./cache";
 import type { ChartRange, ChartResponse, Fundamentals, IndexQuote, Market, Quote, SearchItem } from "./types";
-import { US_UNIVERSE, findInUniverse, getTwUniverse, UniverseEntry } from "./universe";
+import { US_UNIVERSE, findInUniverse, findSymbolByName, getTwUniverse, UniverseEntry } from "./universe";
 import { fetchTwseCandles, fetchTwseFundamentalsAll, fetchTwseQuote, fetchTwseQuotesBatch } from "./twse";
 import { fetchUsCandles, fetchUsFundamentals, fetchUsQuote, fetchUsQuotesBatch } from "./us";
 import { computeSignals, type Signal } from "@/lib/signals";
@@ -33,7 +33,16 @@ export function normalizeSymbol(symbolInput: string): string {
   } catch {
     // malformed percent-encoding; fall back to the raw input
   }
-  return decoded.trim().toUpperCase().replace(/\.(TW|TWO|US)$/i, "");
+  const trimmed = decoded.trim();
+  // The header search box and "/stock/<input>" both accept a company name
+  // typed in directly (e.g. "台積電"), not just a ticker — resolve that to
+  // its actual code before the market-agnostic uppercase/suffix cleanup
+  // below, which would otherwise pass the name straight through to a data
+  // source that only understands codes/tickers and get "資料暫缺" back for
+  // a perfectly findable stock.
+  const byName = findSymbolByName(trimmed);
+  if (byName) return byName.symbol;
+  return trimmed.toUpperCase().replace(/\.(TW|TWO|US)$/i, "");
 }
 
 const QUOTE_TTL_MS = 20_000;
@@ -105,11 +114,19 @@ const INDEX_DEFS: Array<{ symbol: string; name: string; market: Market; misCode?
  * Only includes indices that were actually fetched successfully — an
  * index that failed to load is simply omitted rather than shown with a
  * substitute value.
+ *
+ * Each index is cached under its own key rather than one "indices" key for
+ * the whole array: with a single shared key, one bad moment where all four
+ * upstream calls happened to fail at once cached an *empty* array for the
+ * full TTL, blanking the homepage's index cards for 20s even if upstream
+ * had already recovered a moment later. Per-index keys mean a transient
+ * failure only withholds that one index for its own TTL, and doesn't touch
+ * whatever the others most recently succeeded with.
  */
 export async function getIndices(): Promise<IndexQuote[]> {
-  return cached("indices", QUOTE_TTL_MS, async () => {
-    const results = await Promise.all(
-      INDEX_DEFS.map(async (def): Promise<IndexQuote | null> => {
+  const results = await Promise.all(
+    INDEX_DEFS.map((def) =>
+      cached<IndexQuote | null>(`index:${def.symbol}`, QUOTE_TTL_MS, async () => {
         try {
           const q =
             def.market === "TW" && def.misCode ? await fetchTwseQuote(def.misCode) : await fetchUsQuote(def.symbol);
@@ -118,9 +135,9 @@ export async function getIndices(): Promise<IndexQuote[]> {
           return null;
         }
       })
-    );
-    return results.filter((r): r is IndexQuote => r !== null);
-  });
+    )
+  );
+  return results.filter((r): r is IndexQuote => r !== null);
 }
 
 /**

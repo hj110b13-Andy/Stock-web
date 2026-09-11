@@ -1,4 +1,4 @@
-import { chunk, fetchWithTimeout } from "./cache";
+import { cached, chunk, fetchWithTimeout } from "./cache";
 import type { Candle, ChartRange, Fundamentals, Quote } from "./types";
 import { findInUniverse } from "./universe";
 
@@ -9,6 +9,64 @@ import { findInUniverse } from "./universe";
 // production deployment.
 
 const RANGE_PARAM: Record<ChartRange, string> = { "1m": "1mo", "3m": "3mo", "6m": "6mo", "1y": "1y" };
+
+const YAHOO_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
+
+interface YahooAuth {
+  cookie: string;
+  crumb: string;
+}
+
+/**
+ * Yahoo's `v7/finance/quote` (used for batch quotes and fundamentals) now
+ * rejects unauthenticated requests with 401 "Invalid Crumb" — it needs a
+ * session cookie plus a crumb token minted against that same cookie. Both
+ * come from unauthenticated endpoints (no login/API key involved, just a
+ * handshake Yahoo's own web app performs before calling its API), so this
+ * fetches a cookie from a lightweight Yahoo endpoint, exchanges it for a
+ * crumb, and returns both for the caller to attach. `fc.yahoo.com` itself
+ * 404s — fetched with redirect:"manual" because only its `Set-Cookie` is
+ * wanted, not whatever page a redirect would land on.
+ */
+async function fetchYahooAuth(): Promise<YahooAuth | null> {
+  try {
+    const cookieRes = await fetch("https://fc.yahoo.com", {
+      headers: { "User-Agent": YAHOO_UA },
+      redirect: "manual",
+      signal: AbortSignal.timeout(4000),
+    });
+    const setCookies =
+      typeof cookieRes.headers.getSetCookie === "function"
+        ? cookieRes.headers.getSetCookie()
+        : [cookieRes.headers.get("set-cookie")].filter((c): c is string => !!c);
+    const cookie = setCookies.map((c) => c.split(";")[0]).join("; ");
+    if (!cookie) return null;
+
+    const crumbRes = await fetch("https://query1.finance.yahoo.com/v1/test/getcrumb", {
+      headers: { "User-Agent": YAHOO_UA, Cookie: cookie },
+      signal: AbortSignal.timeout(4000),
+    });
+    if (!crumbRes.ok) return null;
+    const crumb = (await crumbRes.text()).trim();
+    if (!crumb || crumb.includes("<")) return null; // an HTML error page, not a real crumb
+    return { cookie, crumb };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Cached well under an hour: the crumb stays valid for as long as its
+ * cookie does (much longer than one request), so redoing this handshake on
+ * every call would just double Yahoo round-trips for nothing. Caller must
+ * treat a null result as "proceed unauthenticated" rather than fail outright
+ * — if Yahoo ever changes this handshake too, quotes/fundamentals degrade
+ * back to today's behavior instead of breaking harder.
+ */
+function getYahooAuth(): Promise<YahooAuth | null> {
+  return cached("yahoo:auth", 50 * 60_000, fetchYahooAuth);
+}
 
 interface YahooChartResult {
   meta: {
@@ -48,11 +106,7 @@ async function fetchYahooChart(symbol: string, range: ChartRange): Promise<Yahoo
     symbol
   )}?range=${RANGE_PARAM[range]}&interval=1d`;
   const res = await fetchWithTimeout(url, 4500, {
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-      Accept: "application/json",
-    },
+    headers: { "User-Agent": YAHOO_UA, Accept: "application/json" },
   });
   const data = (await res.json()) as YahooChartResponse;
   const result = data.chart.result?.[0];
@@ -60,10 +114,30 @@ async function fetchYahooChart(symbol: string, range: ChartRange): Promise<Yahoo
   return result;
 }
 
+/**
+ * `meta.previousClose`/`regularMarketOpen`/day-high/day-low are only
+ * populated by Yahoo for short ranges — requesting the 1-month range this
+ * function actually needs left them undefined, which fell through to
+ * `chartPreviousClose` (the close from a month ago, not yesterday) and to
+ * the current price standing in for open/high/low. That silently produced
+ * a wrong sign on change/% for every US stock (e.g. a stock that fell
+ * showing as up double digits) and open==price on every page. The daily OHLC
+ * bars in `indicators.quote[0]` are present regardless of range, so this
+ * reads today's (last) bar and yesterday's (second-to-last) bar from there
+ * instead and only falls back to `meta` if a bar is somehow missing.
+ */
 export async function fetchUsQuote(symbol: string): Promise<Quote> {
   const result = await fetchYahooChart(symbol, "1m");
   const meta = result.meta;
-  const prevClose = meta.previousClose ?? meta.chartPreviousClose ?? meta.regularMarketPrice;
+  const bars = result.indicators.quote[0];
+  const closes = bars.close;
+
+  let todayIdx = closes.length - 1;
+  while (todayIdx >= 0 && closes[todayIdx] == null) todayIdx--;
+  let prevIdx = todayIdx - 1;
+  while (prevIdx >= 0 && closes[prevIdx] == null) prevIdx--;
+
+  const prevClose = prevIdx >= 0 ? closes[prevIdx]! : meta.previousClose ?? meta.chartPreviousClose ?? meta.regularMarketPrice;
   const change = meta.regularMarketPrice - prevClose;
   const known = findInUniverse(symbol, "US");
 
@@ -74,9 +148,9 @@ export async function fetchUsQuote(symbol: string): Promise<Quote> {
     price: round2(meta.regularMarketPrice),
     change: round2(change),
     changePercent: prevClose ? round2((change / prevClose) * 100) : 0,
-    open: round2(meta.regularMarketOpen ?? meta.regularMarketPrice),
-    high: round2(meta.regularMarketDayHigh ?? meta.regularMarketPrice),
-    low: round2(meta.regularMarketDayLow ?? meta.regularMarketPrice),
+    open: round2(todayIdx >= 0 ? bars.open[todayIdx] ?? meta.regularMarketOpen ?? meta.regularMarketPrice : meta.regularMarketOpen ?? meta.regularMarketPrice),
+    high: round2(todayIdx >= 0 ? bars.high[todayIdx] ?? meta.regularMarketDayHigh ?? meta.regularMarketPrice : meta.regularMarketDayHigh ?? meta.regularMarketPrice),
+    low: round2(todayIdx >= 0 ? bars.low[todayIdx] ?? meta.regularMarketDayLow ?? meta.regularMarketPrice : meta.regularMarketDayLow ?? meta.regularMarketPrice),
     prevClose: round2(prevClose),
     volume: meta.regularMarketVolume ?? 0,
     currency: meta.currency ?? "USD",
@@ -115,18 +189,20 @@ export async function fetchUsQuotesBatch(symbols: string[]): Promise<Map<string,
   const map = new Map<string, Quote>();
   if (symbols.length === 0) return map;
 
+  const auth = await getYahooAuth();
   const chunks = chunk(symbols, QUOTE_BATCH_CHUNK_SIZE);
   const results = await Promise.all(
     chunks.map(async (group) => {
+      const crumbParam = auth ? `&crumb=${encodeURIComponent(auth.crumb)}` : "";
       const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${group
         .map((s) => encodeURIComponent(s))
-        .join(",")}`;
+        .join(",")}${crumbParam}`;
       try {
         const res = await fetchWithTimeout(url, 6000, {
           headers: {
-            "User-Agent":
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+            "User-Agent": YAHOO_UA,
             Accept: "application/json",
+            ...(auth ? { Cookie: auth.cookie } : {}),
           },
         });
         const data = (await res.json()) as YahooQuoteResponse;
@@ -179,12 +255,14 @@ function normalizeYieldPercent(y: number | undefined): number | undefined {
 }
 
 export async function fetchUsFundamentals(symbol: string): Promise<Fundamentals | null> {
-  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbol)}`;
+  const auth = await getYahooAuth();
+  const crumbParam = auth ? `&crumb=${encodeURIComponent(auth.crumb)}` : "";
+  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbol)}${crumbParam}`;
   const res = await fetchWithTimeout(url, 5000, {
     headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+      "User-Agent": YAHOO_UA,
       Accept: "application/json",
+      ...(auth ? { Cookie: auth.cookie } : {}),
     },
   });
   const data = (await res.json()) as YahooFundamentalsResponse;

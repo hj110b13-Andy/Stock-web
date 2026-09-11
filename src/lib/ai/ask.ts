@@ -9,7 +9,12 @@ export interface AskResult {
   usedAi: boolean;
 }
 
-const SYMBOL_PATTERN = /\b\d{4,6}\b|\b[A-Z]{1,5}\b/g;
+// The negative lookahead keeps a plain year mention ("2025年台股展望") from
+// being read as TW stock code 2025 (千興) — TWSE codes are 4-6 digits with
+// no reserved range, so any bare number in that span is otherwise ambiguous
+// with a year, and "20XX年" is by far the most common way one shows up in a
+// question that isn't about a specific stock at all.
+const SYMBOL_PATTERN = /\b\d{4,6}\b(?!\s*年)|\b[A-Z]{1,5}\b/g;
 const STOPWORDS = new Set([
   "THE", "AND", "FOR", "ARE", "WHY", "HOW", "WHAT", "WILL", "WITH", "THIS",
   "THAT", "CAN", "YOU", "PLEASE", "STOCK", "TODAY", "NOW", "AI", "US", "TW",

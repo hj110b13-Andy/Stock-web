@@ -19,11 +19,36 @@ interface MisRow {
   h: string; // high
   l: string; // low
   v: string; // 累積成交量，單位是「張」（1 張 = 1000 股），需乘 1000 才能跟 STOCK_DAY 的股數對齊
+  b?: string; // 揭示買價，最多 5 檔、以 "_" 分隔，第一檔是目前最佳買價
+  a?: string; // 揭示賣價，最多 5 檔、以 "_" 分隔，第一檔是目前最佳賣價
 }
 
-function rowToQuote(row: MisRow): Quote {
+/** First (best) price out of MIS's "_"-separated bid/ask depth string. */
+function bestDepthPrice(depth: string | undefined): number | undefined {
+  if (!depth) return undefined;
+  const value = parseFloat(depth.split("_")[0]);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function rowToQuote(row: MisRow): Quote | null {
   const prevClose = parseFloat(row.y);
-  const last = row.z === "-" || row.z === "" ? prevClose : parseFloat(row.z);
+  if (!Number.isFinite(prevClose)) return null; // no real data at all for this code — not a real listed stock
+
+  // `z` (last trade) sits at "-" for most stocks most of the time — TWSE
+  // only updates it when a trade actually prints, which for anything but
+  // the most liquid names can mean long stretches with no update even
+  // while the bid/ask book keeps moving. Falling back straight to
+  // yesterday's close (as this used to) made ~90% of stocks read a flat
+  // 0.00% all session and let the displayed price sit outside the
+  // (correctly live-updating) high/low range. The midpoint of the current
+  // best bid/ask is a live, TWSE-sourced approximation of where the stock
+  // actually is trading right now.
+  let last = parseFloat(row.z);
+  if (!Number.isFinite(last) || row.z === "-" || row.z === "") {
+    const bid = bestDepthPrice(row.b);
+    const ask = bestDepthPrice(row.a);
+    last = bid != null && ask != null ? (bid + ask) / 2 : bid ?? ask ?? prevClose;
+  }
   const change = last - prevClose;
   const known = findInUniverse(row.c, "TW");
 
@@ -55,8 +80,9 @@ export async function fetchTwseQuote(stockNo: string): Promise<Quote> {
   });
   const data = (await res.json()) as { msgArray?: MisRow[] };
   const row = data.msgArray?.[0];
-  if (!row) throw new Error(`No TWSE quote for ${stockNo}`);
-  return rowToQuote(row);
+  const quote = row && rowToQuote(row);
+  if (!quote) throw new Error(`No TWSE quote for ${stockNo}`);
+  return quote;
 }
 
 /**
@@ -98,7 +124,8 @@ export async function fetchTwseQuotesBatch(stockNos: string[]): Promise<Map<stri
     })
   );
   for (const row of results.flat()) {
-    map.set(row.c, rowToQuote(row));
+    const quote = rowToQuote(row);
+    if (quote) map.set(row.c, quote);
   }
   return map;
 }
