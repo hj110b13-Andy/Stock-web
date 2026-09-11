@@ -240,6 +240,7 @@ interface YahooFundamentalsResult {
   marketCap?: number;
   dividendYield?: number; // unit is inconsistent across Yahoo endpoints/symbols
   trailingAnnualDividendYield?: number; // fraction, e.g. 0.0053 = 0.53% — prefer this one
+  priceToBook?: number;
 }
 
 interface YahooFundamentalsResponse {
@@ -272,6 +273,7 @@ export async function fetchUsFundamentals(symbol: string): Promise<Fundamentals 
     peRatio: r.trailingPE && Number.isFinite(r.trailingPE) && r.trailingPE > 0 ? round2(r.trailingPE) : undefined,
     dividendYield: normalizeYieldPercent(r.trailingAnnualDividendYield ?? r.dividendYield),
     marketCap: r.marketCap && Number.isFinite(r.marketCap) && r.marketCap > 0 ? r.marketCap : undefined,
+    pbRatio: r.priceToBook && Number.isFinite(r.priceToBook) && r.priceToBook > 0 ? round2(r.priceToBook) : undefined,
   };
 }
 

@@ -1,9 +1,12 @@
 import { cached, cachedMap, mapWithConcurrency } from "./cache";
-import type { ChartRange, ChartResponse, Earnings, Fundamentals, IndexQuote, Market, Quote, SearchItem } from "./types";
+import type { ChartRange, ChartResponse, Chips, Earnings, Fundamentals, IndexQuote, Market, MaterialAnnouncement, Quote, SearchItem } from "./types";
 import { US_UNIVERSE, findInUniverse, findSymbolByName, getTwUniverse, UniverseEntry } from "./universe";
 import {
   fetchTwseCandles,
   fetchTwseFundamentalsAll,
+  fetchTwseInstitutionalTradingAll,
+  fetchTwseMarginTradingAll,
+  fetchTwseMaterialAnnouncementsAll,
   fetchTwseMonthlyRevenueAll,
   fetchTwseQuarterlyEpsAll,
   fetchTwseQuote,
@@ -134,6 +137,46 @@ export async function getEarnings(symbolInput: string, marketHint?: Market): Pro
     return await cached(`earnings:US:${symbol}`, EARNINGS_TTL_MS, () => fetchUsEarnings(symbol));
   } catch {
     return null;
+  }
+}
+
+const CHIPS_TTL_MS = 30 * 60_000; // 三大法人/融資融券資料收盤後才會整批更新，半小時的快取視窗足夠
+
+/**
+ * TW only（籌碼面：三大法人買賣超＋融資融券餘額）— 美股沒有對應的公開資料
+ * 源，一律回傳 null，不是抓取失敗。兩份資料都是「整個市場一次回傳」的報表，
+ * 各自整包快取一次再依代號查表，不對每檔股票各打一次。
+ */
+export async function getChips(symbolInput: string, marketHint?: Market): Promise<Chips | null> {
+  const symbol = normalizeSymbol(symbolInput);
+  const market = marketHint ?? detectMarket(symbol);
+  if (market !== "TW") return null;
+  try {
+    const [institutionalMap, marginMap] = await Promise.all([
+      cachedMap("chips:TW:institutional", CHIPS_TTL_MS, fetchTwseInstitutionalTradingAll),
+      cachedMap("chips:TW:margin", CHIPS_TTL_MS, fetchTwseMarginTradingAll),
+    ]);
+    const institutional = institutionalMap.get(symbol);
+    const margin = marginMap.get(symbol);
+    if (!institutional && !margin) return null;
+    return { ...institutional, ...margin };
+  } catch {
+    return null;
+  }
+}
+
+const ANNOUNCEMENTS_TTL_MS = 30 * 60_000;
+
+/** TW only — 最近一個交易日的重大訊息公告；大多數股票當天沒有公告是常態，回傳空陣列而非 null。 */
+export async function getMaterialAnnouncements(symbolInput: string, marketHint?: Market): Promise<MaterialAnnouncement[]> {
+  const symbol = normalizeSymbol(symbolInput);
+  const market = marketHint ?? detectMarket(symbol);
+  if (market !== "TW") return [];
+  try {
+    const map = await cachedMap("announcements:TW:all", ANNOUNCEMENTS_TTL_MS, fetchTwseMaterialAnnouncementsAll);
+    return map.get(symbol) ?? [];
+  } catch {
+    return [];
   }
 }
 

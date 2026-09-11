@@ -2,7 +2,8 @@ import type { Fundamentals } from "@/lib/data";
 import { formatMarketCap } from "@/lib/format";
 
 export default function FundamentalsCard({ fundamentals, currency }: { fundamentals: Fundamentals | null; currency: string }) {
-  const hasAny = fundamentals && (fundamentals.peRatio || fundamentals.dividendYield || fundamentals.marketCap);
+  const hasAny =
+    fundamentals && (fundamentals.peRatio || fundamentals.dividendYield || fundamentals.marketCap || fundamentals.pbRatio);
 
   return (
     <div className="rounded-lg border border-(--gridline) bg-(--surface-1) p-4">
@@ -10,11 +11,17 @@ export default function FundamentalsCard({ fundamentals, currency }: { fundament
       {!hasAny ? (
         <p className="text-sm text-(--text-muted)">目前無法取得這檔股票的基本面資料</p>
       ) : (
-        <dl className="grid grid-cols-3 gap-4 text-sm">
+        <dl className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
           <div>
             <dt className="text-(--text-muted)">本益比 (P/E)</dt>
             <dd className="mt-0.5 font-medium tabular-nums">
               {fundamentals?.peRatio ? fundamentals.peRatio.toFixed(2) : "資料暫缺"}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-(--text-muted)">股價淨值比 (P/B)</dt>
+            <dd className="mt-0.5 font-medium tabular-nums">
+              {fundamentals?.pbRatio ? fundamentals.pbRatio.toFixed(2) : "資料暫缺"}
             </dd>
           </div>
           <div>

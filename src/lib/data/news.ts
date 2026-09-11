@@ -8,17 +8,28 @@ export interface NewsItem {
 
 const NEWS_TTL_MS = 20 * 60_000; // headlines don't need second-by-second freshness
 
+/** Which Google News regional edition to search — each surfaces a different
+ *  set of outlets (zh-TW pulls in Chinese-language financial media, en-US
+ *  pulls in English-language wires like Reuters/Bloomberg/MarketWatch that
+ *  the zh-TW edition mostly doesn't carry), not just a translation of the
+ *  same underlying stories. */
+type NewsLocale = "zh-TW" | "en-US";
+
+const LOCALE_QUERY_PARAMS: Record<NewsLocale, string> = {
+  "zh-TW": "hl=zh-TW&gl=TW&ceid=TW:zh-Hant",
+  "en-US": "hl=en-US&gl=US&ceid=US:en",
+};
+
 /**
  * Google News' RSS search — free, no API key, and (unlike scraping any one
  * publisher's site) a stable, documented URL shape that aggregates many
- * Chinese-language sources at once. This is what fills the "資訊面" gap the
- * AI used to have no source for at all (it only ever saw price/technical
- * data): callers pass a market or company query and get back recent
- * real headlines with real publish dates, never a fabricated summary of
- * "what's in the news."
+ * sources at once. This is what fills the "資訊面" gap the AI used to have
+ * no source for at all (it only ever saw price/technical data): callers
+ * pass a market or company query and get back recent real headlines with
+ * real publish dates, never a fabricated summary of "what's in the news."
  */
-async function fetchNewsRaw(query: string, limit: number): Promise<NewsItem[]> {
-  const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant`;
+async function fetchNewsRaw(query: string, limit: number, locale: NewsLocale): Promise<NewsItem[]> {
+  const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&${LOCALE_QUERY_PARAMS[locale]}`;
   const res = await fetchWithTimeout(url, 6000, {
     headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
   });
@@ -62,11 +73,31 @@ function decodeXmlEntities(text: string): string {
     .replace(/&amp;/g, "&");
 }
 
-/** Cached wrapper — same query within the TTL window shares one fetch. */
-export async function fetchNews(query: string, limit = 6): Promise<NewsItem[]> {
+/** Cached wrapper — same query+locale within the TTL window shares one fetch. */
+export async function fetchNews(query: string, limit = 6, locale: NewsLocale = "zh-TW"): Promise<NewsItem[]> {
   try {
-    return await cached(`news:${query}`, NEWS_TTL_MS, () => fetchNewsRaw(query, limit));
+    return await cached(`news:${locale}:${query}`, NEWS_TTL_MS, () => fetchNewsRaw(query, limit, locale));
   } catch {
     return [];
   }
+}
+
+/**
+ * Fetches the same query across several Google News regional editions in
+ * parallel and merges them, de-duplicated by title — used for US stocks/
+ * market news so the grounding gets genuine English-language wire coverage
+ * (Reuters/Bloomberg/MarketWatch etc.) alongside zh-TW coverage, not just
+ * one edition's view of "what's in the news."
+ */
+export async function fetchNewsMulti(query: string, perLocaleLimit: number, locales: NewsLocale[]): Promise<NewsItem[]> {
+  const lists = await Promise.all(locales.map((locale) => fetchNews(query, perLocaleLimit, locale)));
+  const seen = new Set<string>();
+  const merged: NewsItem[] = [];
+  for (const item of lists.flat()) {
+    const key = item.title.trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    merged.push(item);
+  }
+  return merged;
 }

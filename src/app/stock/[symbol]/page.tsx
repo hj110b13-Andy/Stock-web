@@ -4,9 +4,10 @@ import StockChart from "@/components/StockChart";
 import AskAboutButton from "@/components/AskAboutButton";
 import WatchlistButton from "@/components/WatchlistButton";
 import FundamentalsCard from "@/components/FundamentalsCard";
+import ChipsCard from "@/components/ChipsCard";
 import LiveQuoteHeader from "@/components/LiveQuoteHeader";
 import PriceAlertForm from "@/components/PriceAlertForm";
-import { getQuote, getFundamentals, detectMarket, normalizeSymbol } from "@/lib/data";
+import { getQuote, getFundamentals, getChips, getMaterialAnnouncements, detectMarket, normalizeSymbol } from "@/lib/data";
 import type { Market } from "@/lib/data";
 import { formatPercent, formatPrice } from "@/lib/format";
 
@@ -54,9 +55,11 @@ export default async function StockDetailPage({ params, searchParams }: PageProp
   if (!symbol) notFound();
 
   const marketHint = market === "TW" || market === "US" ? (market as Market) : undefined;
-  const [quote, fundamentals] = await Promise.all([
+  const [quote, fundamentals, chips, announcements] = await Promise.all([
     getQuote(symbol, marketHint),
     getFundamentals(symbol, marketHint),
+    getChips(symbol, marketHint),
+    getMaterialAnnouncements(symbol, marketHint),
   ]);
 
   if (!quote) {
@@ -94,6 +97,8 @@ export default async function StockDetailPage({ params, searchParams }: PageProp
       </section>
 
       <FundamentalsCard fundamentals={fundamentals} currency={quote.currency} />
+
+      {quote.market === "TW" && <ChipsCard chips={chips} announcements={announcements} />}
 
       <PriceAlertForm symbol={quote.symbol} market={quote.market} name={quote.name} currency={quote.currency} />
 

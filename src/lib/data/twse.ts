@@ -1,5 +1,5 @@
 import { chunk, fetchWithTimeout } from "./cache";
-import type { Candle, ChartRange, Earnings, Fundamentals, Quote } from "./types";
+import type { Candle, ChartRange, Chips, Earnings, Fundamentals, MaterialAnnouncement, Quote } from "./types";
 import { findInUniverse, type UniverseEntry } from "./universe";
 
 // TWSE (Taiwan Stock Exchange) public data endpoints. No API key required.
@@ -231,12 +231,151 @@ export async function fetchTwseFundamentalsAll(): Promise<Map<string, Fundamenta
   for (const row of rows) {
     const peRatio = parseFloat(row.PEratio);
     const dividendYield = parseFloat(row.DividendYield);
+    const pbRatio = parseFloat(row.PBratio);
     map.set(row.Code, {
       peRatio: Number.isFinite(peRatio) && peRatio > 0 ? peRatio : undefined,
       dividendYield: Number.isFinite(dividendYield) && dividendYield > 0 ? dividendYield : undefined,
+      pbRatio: Number.isFinite(pbRatio) && pbRatio > 0 ? pbRatio : undefined,
     });
   }
   return map;
+}
+
+interface InstitutionalTradingResponse {
+  stat: string;
+  date?: string; // "20260911", already western calendar (not ROC)
+  fields?: string[];
+  data?: string[][];
+}
+
+function parseTwseNumber(raw: string | undefined): number | undefined {
+  if (!raw) return undefined;
+  const n = parseFloat(raw.replace(/,/g, ""));
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/**
+ * 三大法人（外資、投信、自營商）買賣超日報 — TWSE 官方網站本身查價頁面在用的
+ * 端點（不在 v1 OpenAPI 清單裡，但一樣是免費、不需金鑰、公開的 JSON），單位是
+ * 股（hints 欄位標明「單位：股」，不是「張」，跟下面融資融券的張數不同單位，
+ * 使用時要分開標示避免混淆）。一次回傳全市場，所以整包快取一次、依代號查表，
+ * 不對每檔股票各打一次。
+ */
+export async function fetchTwseInstitutionalTradingAll(): Promise<Map<string, Chips>> {
+  const url = "https://www.twse.com.tw/rwd/zh/fund/T86?response=json&date=&selectType=ALL";
+  const res = await fetchWithTimeout(url, 8000);
+  const payload = (await res.json()) as InstitutionalTradingResponse;
+  const map = new Map<string, Chips>();
+  if (payload.stat !== "OK" || !payload.data || !payload.fields) return map;
+
+  const fields = payload.fields;
+  const idx = (name: string) => fields.indexOf(name);
+  const iCode = idx("證券代號");
+  const iForeignExclDealer = idx("外陸資買賣超股數(不含外資自營商)");
+  const iForeignDealer = idx("外資自營商買賣超股數");
+  const iTrust = idx("投信買賣超股數");
+  const iDealer = idx("自營商買賣超股數");
+  const iTotal = idx("三大法人買賣超股數");
+  const date = payload.date && payload.date.length === 8
+    ? `${payload.date.slice(0, 4)}-${payload.date.slice(4, 6)}-${payload.date.slice(6, 8)}`
+    : undefined;
+  if (iCode === -1) return map;
+
+  for (const row of payload.data) {
+    const code = row[iCode]?.trim();
+    if (!code) continue;
+    const foreignExclDealer = parseTwseNumber(row[iForeignExclDealer]);
+    const foreignDealer = parseTwseNumber(row[iForeignDealer]);
+    const foreignNetShares =
+      foreignExclDealer != null || foreignDealer != null ? (foreignExclDealer ?? 0) + (foreignDealer ?? 0) : undefined;
+    map.set(code, {
+      date,
+      foreignNetShares,
+      trustNetShares: parseTwseNumber(row[iTrust]),
+      dealerNetShares: parseTwseNumber(row[iDealer]),
+      institutionalNetShares: parseTwseNumber(row[iTotal]),
+    });
+  }
+  return map;
+}
+
+interface MarginRow {
+  股票代號: string;
+  融資今日餘額: string;
+  融資前日餘額: string;
+  融券今日餘額: string;
+  融券前日餘額: string;
+}
+
+/**
+ * 融資融券餘額 — TWSE OpenAPI，涵蓋每檔可信用交易的股票，單位是「張」
+ * （TWSE 原始資料本來就是張數，不是股數，跟上面三大法人的股數單位不同）。
+ * 同樣一次回傳全市場，整包快取後依代號查表。
+ */
+export async function fetchTwseMarginTradingAll(): Promise<Map<string, Chips>> {
+  const url = "https://openapi.twse.com.tw/v1/exchangeReport/MI_MARGN";
+  const res = await fetchWithTimeout(url, 8000);
+  const rows = (await res.json()) as MarginRow[];
+  const map = new Map<string, Chips>();
+  for (const row of rows) {
+    const code = row.股票代號?.trim();
+    if (!code) continue;
+    const marginBalance = parseTwseNumber(row.融資今日餘額);
+    const marginPrev = parseTwseNumber(row.融資前日餘額);
+    const shortBalance = parseTwseNumber(row.融券今日餘額);
+    const shortPrev = parseTwseNumber(row.融券前日餘額);
+    map.set(code, {
+      marginBalance,
+      marginBalanceChange: marginBalance != null && marginPrev != null ? marginBalance - marginPrev : undefined,
+      shortBalance,
+      shortBalanceChange: shortBalance != null && shortPrev != null ? shortBalance - shortPrev : undefined,
+    });
+  }
+  return map;
+}
+
+interface MaterialAnnouncementRow {
+  公司代號: string;
+  發言日期: string; // ROC compact date, e.g. "1150910"
+  // TWSE's actual JSON key has a trailing space ("主旨 ", confirmed by
+  // fetching the live endpoint) — without accounting for that, row["主旨"]
+  // is always undefined and every single announcement gets silently
+  // filtered out below as "no subject", making this feature look like it
+  // works (no errors, valid Map) while actually returning nothing for
+  // every stock, every day.
+  "主旨 ": string;
+}
+
+/**
+ * 上市公司每日重大訊息公告（併購、增資、法說會、股務異動等）— TWSE OpenAPI。
+ * 每天只收錄最近一個交易日全市場的公告（通常一兩百筆），大多數股票當天完全
+ * 沒有公告是正常現象，不代表資料抓取失敗。
+ */
+export async function fetchTwseMaterialAnnouncementsAll(): Promise<Map<string, MaterialAnnouncement[]>> {
+  const url = "https://openapi.twse.com.tw/v1/opendata/t187ap04_L";
+  const res = await fetchWithTimeout(url, 8000);
+  const rows = (await res.json()) as MaterialAnnouncementRow[];
+  const map = new Map<string, MaterialAnnouncement[]>();
+  for (const row of rows) {
+    const code = row.公司代號?.trim();
+    if (!code || !row.發言日期) continue;
+    const subject = row["主旨 "]?.replace(/[\r\n]+/g, " ").replace(/\s{2,}/g, " ").trim();
+    if (!subject) continue;
+    const list = map.get(code) ?? [];
+    list.push({ date: rocCompactToIso(row.發言日期), subject });
+    map.set(code, list);
+  }
+  return map;
+}
+
+/** ROC compact date ("1150910") -> ISO ("2026-09-10"). Distinct from rocToIso
+ *  below, which parses the "/"-separated ROC date STOCK_DAY uses. */
+function rocCompactToIso(roc: string): string {
+  if (roc.length < 5) return roc;
+  const year = parseInt(roc.slice(0, -4), 10) + 1911;
+  const month = roc.slice(-4, -2);
+  const day = roc.slice(-2);
+  return `${year}-${month}-${day}`;
 }
 
 interface RevenueRow {

@@ -1,6 +1,18 @@
-import { findSymbolByName, getChart, getEarnings, getIndices, getMultiSignalStocks, getQuote, searchStocks } from "@/lib/data";
+import {
+  findSymbolByName,
+  getChart,
+  getChips,
+  getEarnings,
+  getFundamentals,
+  getIndices,
+  getMaterialAnnouncements,
+  getMultiSignalStocks,
+  getQuote,
+  searchStocks,
+} from "@/lib/data";
 import type { Market } from "@/lib/data";
-import { fetchNews } from "@/lib/data/news";
+import { fetchNews, fetchNewsMulti, type NewsItem } from "@/lib/data/news";
+import { formatMarketCap } from "@/lib/format";
 import { callAiProviders } from "@/lib/ai/provider";
 import type { ChatTurn } from "@/lib/ai/types";
 
@@ -41,10 +53,20 @@ async function buildStockGrounding(
   // Fired only once the quote resolves the actual market (target.market may
   // be undefined when guessed from text) and gives us the real company name
   // to search news for — a bare ticker like "2330" is a much weaker news
-  // query than "台積電".
-  const [earnings, news] = await Promise.all([
+  // query than "台積電". For US stocks, quote.name is already the English
+  // company name (from Yahoo), so the same query works for both the zh-TW
+  // and en-US Google News editions — the en-US edition is what actually
+  // surfaces English-language wire coverage (Reuters/Bloomberg/MarketWatch)
+  // that the zh-TW edition mostly doesn't carry.
+  const newsQuery = `${quote.name} ${quote.symbol}`;
+  const [earnings, news, fundamentals, chips, announcements] = await Promise.all([
     getEarnings(quote.symbol, quote.market).catch(() => null),
-    fetchNews(`${quote.name} ${quote.symbol}`, 5).catch(() => []),
+    (quote.market === "US" ? fetchNewsMulti(newsQuery, 4, ["zh-TW", "en-US"]) : fetchNews(newsQuery, 8)).catch(
+      () => []
+    ),
+    getFundamentals(quote.symbol, quote.market).catch(() => null),
+    getChips(quote.symbol, quote.market).catch(() => null),
+    getMaterialAnnouncements(quote.symbol, quote.market).catch(() => []),
   ]);
 
   const changeLabel = quote.change >= 0 ? "上漲" : "下跌";
@@ -60,6 +82,15 @@ async function buildStockGrounding(
     lines.push("（歷史走勢資料目前無法取得）");
   }
   lines.push("（來源：即時/近即時公開資料）");
+
+  if (fundamentals) {
+    const parts: string[] = [];
+    if (fundamentals.peRatio != null) parts.push(`本益比 ${fundamentals.peRatio}`);
+    if (fundamentals.pbRatio != null) parts.push(`股價淨值比 ${fundamentals.pbRatio}`);
+    if (fundamentals.dividendYield != null) parts.push(`殖利率 ${fundamentals.dividendYield}%`);
+    if (fundamentals.marketCap != null) parts.push(`市值 ${formatMarketCap(fundamentals.marketCap, quote.currency)}`);
+    if (parts.length > 0) lines.push(`基本面：${parts.join("；")}`);
+  }
 
   if (earnings) {
     const parts: string[] = [];
@@ -78,11 +109,65 @@ async function buildStockGrounding(
     if (parts.length > 0) lines.push(`財報：${parts.join("；")}`);
   }
 
+  // TW only — chips/announcements are null/empty for US, see getChips/getMaterialAnnouncements.
+  if (chips) {
+    const signed = (n: number) => `${n >= 0 ? "+" : ""}${n.toLocaleString()}`;
+    const parts: string[] = [];
+    if (chips.institutionalNetShares != null) {
+      const detail = [
+        chips.foreignNetShares != null ? `外資${signed(chips.foreignNetShares)}股` : "",
+        chips.trustNetShares != null ? `投信${signed(chips.trustNetShares)}股` : "",
+        chips.dealerNetShares != null ? `自營商${signed(chips.dealerNetShares)}股` : "",
+      ]
+        .filter(Boolean)
+        .join("、");
+      parts.push(`三大法人合計${signed(chips.institutionalNetShares)}股（${detail}）`);
+    }
+    if (chips.marginBalance != null) {
+      const change = chips.marginBalanceChange != null ? `，較前日${signed(chips.marginBalanceChange)}張` : "";
+      parts.push(`融資餘額 ${chips.marginBalance.toLocaleString()} 張${change}`);
+    }
+    if (chips.shortBalance != null) {
+      const change = chips.shortBalanceChange != null ? `，較前日${signed(chips.shortBalanceChange)}張` : "";
+      parts.push(`融券餘額 ${chips.shortBalance.toLocaleString()} 張${change}`);
+    }
+    if (parts.length > 0) lines.push(`籌碼面（${chips.date ?? "最近交易日"}）：${parts.join("；")}`);
+  }
+
+  if (announcements.length > 0) {
+    const shown = announcements.slice(0, 3).map((a) => `- ${a.date}：${a.subject.length > 80 ? `${a.subject.slice(0, 80)}…` : a.subject}`);
+    lines.push(`近期重大訊息公告：\n${shown.join("\n")}`);
+  }
+
   if (news.length > 0) {
     lines.push(`近期相關新聞：\n${news.map((n) => `- ${n.title}${n.source ? `（${n.source}）` : ""}`).join("\n")}`);
   }
 
   return { symbol: quote.symbol, text: lines.join("\n") };
+}
+
+/**
+ * US market news needs its own English-language query ("US stock market")
+ * for the en-US Google News edition — reusing the Chinese "美股" query there
+ * would return poorly-matched results, since it's searching an English-
+ * language edition with a Chinese term. fetchNewsMulti can't be used here
+ * because it applies one query across every locale; this fetches each
+ * locale with its own matching query and merges/de-dupes by title itself.
+ */
+async function buildUsMarketNews(): Promise<NewsItem[]> {
+  const [zh, en] = await Promise.all([
+    fetchNews("美股", 5).catch(() => []),
+    fetchNews("US stock market", 5, "en-US").catch(() => []),
+  ]);
+  const seen = new Set<string>();
+  const merged: NewsItem[] = [];
+  for (const item of [...zh, ...en]) {
+    const key = item.title.trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    merged.push(item);
+  }
+  return merged;
 }
 
 // Matches "有哪些股票不錯"/"什麼股票要漲了"/"推薦一下"/"今天有什麼強勢股" style
@@ -200,7 +285,7 @@ export async function answerQuestion(
       .catch(() => ""),
     wantsMovers ? buildMoversGrounding() : Promise.resolve(""),
     buildHoldingsGrounding(holdings).catch(() => ""),
-    Promise.all([fetchNews("台股", 5), fetchNews("美股", 5)]).catch(() => [[], []] as const),
+    Promise.all([fetchNews("台股", 6), buildUsMarketNews()]).catch(() => [[], []] as const),
   ]);
 
   if (stockGrounding) groundedSymbol = stockGrounding.symbol;
@@ -226,11 +311,12 @@ export async function answerQuestion(
   const system = [
     "你是一個股票研究網站上的助理，回答繁體中文問題。",
     "風格要求（很重要）：直接講重點、先講結論，語氣像在跟人對話而不是寫報告。不要模稜兩可、不要鋪陳、不要重複同樣的免責聲明兩次以上。能一兩句話講完的就不要條列；只有在真的有好幾個平行項目時才用條列，且每項一行、不要展開解釋。",
-    "你會拿到「個股資料」（使用者問特定股票時，內含報價/K線，資料充足時還有「財報」跟「近期相關新聞」兩行）、「大盤概況」（台股加權指數、道瓊、S&P 500、那斯達克）、「近期市場新聞」（台股/美股各幾則近期真實新聞標題，來源是 Google 新聞），有時候還有「今日焦點數據」（今日漲幅榜、技術訊號共振股）、「我的關注清單/持股」（使用者關注清單裡每一檔的即時報價，有設定成本/股數的還會有損益）。",
-    "使用者問『資訊面/消息面/新聞/為什麼漲跌/財報』這類問題時：直接引用「近期市場新聞」或個股資料裡的「近期相關新聞」「財報」講重點（標題、大概方向、來源即可，不用逐字複述），這些都是真實抓到的資料，不要再回答『沒有新聞管道』『系統僅提供報價數據』這種話——現在有了。新聞/財報資料不夠或抓不到時才老實說目前查不到最新消息，不要就此完全略過不提。",
+    "你會拿到「個股資料」（使用者問特定股票時，內含報價/K線，資料充足時還會有：「基本面」本益比/股價淨值比/殖利率/市值、「財報」月營收年增率與季度EPS、「籌碼面」三大法人買賣超與融資融券餘額增減（僅台股，美股沒有這塊資料）、「近期重大訊息公告」（僅台股）、「近期相關新聞」）、「大盤概況」（台股加權指數、道瓊、S&P 500、那斯達克）、「近期市場新聞」（台股/美股各幾則近期真實新聞標題，美股這塊同時混合中英文來源），有時候還有「今日焦點數據」（今日漲幅榜、技術訊號共振股）、「我的關注清單/持股」（使用者關注清單裡每一檔的即時報價，有設定成本/股數的還會有損益）。",
+    "使用者問『資訊面/消息面/新聞/為什麼漲跌/財報/籌碼/法人在買還是在賣/融資融券』這類問題時：直接引用「近期市場新聞」或個股資料裡對應的區塊講重點（標題、大概方向、來源、實際數字即可，不用逐字複述），這些都是真實抓到的資料，不要再回答『沒有新聞管道』『系統僅提供報價數據』這種話——現在有了。某個區塊資料不夠或抓不到時才老實說目前查不到，不要就此完全略過不提；台股籌碼面/重大訊息若某檔當天剛好沒有法人動作或沒有公告，這是正常現象，直接說『今天沒有明顯的法人動向/沒有重大訊息』即可，不是資料抓取失敗。",
+    "給看法或建議時，要綜合基本面（估值高不高）、財報（營收獲利趨勢）、籌碼面（法人是在買超還是賣超、融資是不是異常暴增暴減）、消息面（近期新聞/重大訊息有沒有利多利空）、技術面（均線/RSI/MACD/量價）這幾個面向一起判斷，不要只看單一面向就下結論；面向之間互相矛盾時（例如技術面強但法人在賣、或基本面便宜但籌碼面偏空）要老實點出這個矛盾，不要選擇性忽略對你的結論不利的那一面。",
     "拿到「我的關注清單/持股」時（通常是使用者按了『分析我的關注清單』或問『幫我看看我關注的股票』），逐檔講重點：現價/今日漲跌、有損益資料的講清楚賺賠多少錢跟百分比、你對這檔現況的看法；沒設定成本的那幾檔就只講現況看法，不用特別提醒『你沒填成本』這種瑣事。多檔的話用條列，每檔一行講完，不要每檔都展開成一大段。",
     "台股與美股常互相影響（例如美股科技股/半導體夜間走勢，隔天常牽動台股電子權值股），有明顯關聯時才連結兩邊資料分析，沒有的話不用勉強牽拖。",
-    "這個網站現在只有你（開發者）跟家人知道密碼才能進來，不是對外公開的服務，使用者問『有哪些股票不錯/推薦一下/幫我選股/這支該不該買』這類問題時，直接根據拿到的資料給明確的個人看法即可，包括『我覺得這幾檔現在值得留意』『這支技術面偏弱，我會先觀望』這種直接的話，不用迴避、不用只丟數據不表態、也不用每次都加但書。看法要根據資料裡實際的數字說理由（例如均量倍數、連漲天數、均線位置、本益比、漲跌幅），不要憑空瞎猜；資料不夠支撐判斷時就老實說資料不足，不要硬掰。",
+    "這個網站現在只有你（開發者）跟家人知道密碼才能進來，不是對外公開的服務，使用者問『有哪些股票不錯/推薦一下/幫我選股/這支該不該買』這類問題時，直接根據拿到的資料給明確的個人看法即可，包括『我覺得這幾檔現在值得留意』『這支技術面偏弱，我會先觀望』這種直接的話，不用迴避、不用只丟數據不表態、也不用每次都加但書。看法要根據資料裡實際的數字說理由（例如均量倍數、連漲天數、均線位置、本益比、股價淨值比、法人買賣超、融資變化、漲跌幅），不要憑空瞎猜；資料不夠支撐判斷時就老實說資料不足，不要硬掰。",
     "請根據資料回答，不要編造資料中沒有的數字；若資料標示為無法取得，直接說目前查不到，不要繞圈子解釋為什麼查不到。",
     "使用者之前的提問與你的回覆會一併附上作為對話紀錄，回答新問題時請自然承接對話脈絡（例如使用者接著問「那美股呢」時，要記得他上一句在問什麼）。",
   ].join("\n");
