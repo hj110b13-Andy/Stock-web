@@ -1,16 +1,16 @@
 "use client";
 
-import { useState, useSyncExternalStore } from "react";
+import { useMemo, useState, useSyncExternalStore } from "react";
 import type { Market } from "@/lib/data";
 import { formatPrice } from "@/lib/format";
-import { addAlert, alertsFor, PRICE_ALERTS_CHANGED_EVENT, removeAlert } from "@/lib/priceAlerts";
+import { addAlert, getAlerts, PRICE_ALERTS_CHANGED_EVENT, removeAlert, type PriceAlert } from "@/lib/priceAlerts";
 
 function subscribe(callback: () => void) {
   window.addEventListener(PRICE_ALERTS_CHANGED_EVENT, callback);
   return () => window.removeEventListener(PRICE_ALERTS_CHANGED_EVENT, callback);
 }
 
-const EMPTY: ReturnType<typeof alertsFor> = [];
+const EMPTY: PriceAlert[] = [];
 
 export default function PriceAlertForm({
   symbol,
@@ -23,11 +23,17 @@ export default function PriceAlertForm({
   name: string;
   currency: string;
 }) {
-  const alerts = useSyncExternalStore(
-    subscribe,
-    () => alertsFor(symbol, market),
-    () => EMPTY
-  );
+  // getAlerts() itself returns a cached, stable reference when the
+  // underlying localStorage value hasn't changed (see lib/priceAlerts.ts) —
+  // required for useSyncExternalStore, which otherwise sees a "new" snapshot
+  // on every render and re-renders forever (React error #185, "Maximum
+  // update depth exceeded"). That's exactly what filtering inline in the
+  // snapshot getter did: `.filter()` allocates a new array every call, so
+  // every render looked like a store change. Filtering *outside* the
+  // snapshot getter, via useMemo keyed on that same stable reference, keeps
+  // the snapshot itself stable while still deriving just this stock's alerts.
+  const allAlerts = useSyncExternalStore(subscribe, getAlerts, () => EMPTY);
+  const alerts = useMemo(() => allAlerts.filter((a) => a.symbol === symbol && a.market === market), [allAlerts, symbol, market]);
   const [condition, setCondition] = useState<"above" | "below">("above");
   const [target, setTarget] = useState("");
 

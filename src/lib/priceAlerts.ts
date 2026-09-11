@@ -66,7 +66,3 @@ export function removeAlert(id: string) {
 export function markTriggered(id: string) {
   save(getAlerts().map((a) => (a.id === id ? { ...a, triggered: true } : a)));
 }
-
-export function alertsFor(symbol: string, market: Market): PriceAlert[] {
-  return getAlerts().filter((a) => a.symbol === symbol && a.market === market);
-}
