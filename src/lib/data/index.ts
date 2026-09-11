@@ -196,10 +196,22 @@ async function fetchMarketQuoteMap(market: Market): Promise<Map<string, Quote>> 
   return map;
 }
 
+// Deliberately much longer than QUOTE_TTL_MS (used for a single symbol's
+// "live" quote while actively watching its page). This is the whole-universe
+// batch fetch behind search/highlights/homepage rankings — by far the most
+// expensive upstream call in the app — and a personal browsing tool doesn't
+// need second-by-second freshness on a ranking list the way a single quote
+// being actively watched does. At 20s, any real visit more than 20s after
+// the last one (i.e. essentially every normal visit, since people don't
+// click faster than that) missed the cache and paid the full TWSE/Yahoo
+// batch-fetch cost — which is what made every highlights/search visit feel
+// slow regardless of how fast the code computing on top of it was.
+const MARKET_MAP_TTL_MS = 2 * 60_000;
+
 // cachedMap, not cached: this value is a Map, and the Redis backend stores
 // JSON — a Map would come back from a shared-cache hit as an empty object.
 async function getMarketQuoteMap(market: Market): Promise<Map<string, Quote>> {
-  return cachedMap(`market-quotes:${market}`, QUOTE_TTL_MS, () => fetchMarketQuoteMap(market));
+  return cachedMap(`market-quotes:${market}`, MARKET_MAP_TTL_MS, () => fetchMarketQuoteMap(market));
 }
 
 export interface SearchFilters {
