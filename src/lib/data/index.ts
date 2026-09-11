@@ -1,8 +1,15 @@
 import { cached, cachedMap, mapWithConcurrency } from "./cache";
-import type { ChartRange, ChartResponse, Fundamentals, IndexQuote, Market, Quote, SearchItem } from "./types";
+import type { ChartRange, ChartResponse, Earnings, Fundamentals, IndexQuote, Market, Quote, SearchItem } from "./types";
 import { US_UNIVERSE, findInUniverse, findSymbolByName, getTwUniverse, UniverseEntry } from "./universe";
-import { fetchTwseCandles, fetchTwseFundamentalsAll, fetchTwseQuote, fetchTwseQuotesBatch } from "./twse";
-import { fetchUsCandles, fetchUsFundamentals, fetchUsQuote, fetchUsQuotesBatch } from "./us";
+import {
+  fetchTwseCandles,
+  fetchTwseFundamentalsAll,
+  fetchTwseMonthlyRevenueAll,
+  fetchTwseQuarterlyEpsAll,
+  fetchTwseQuote,
+  fetchTwseQuotesBatch,
+} from "./twse";
+import { fetchUsCandles, fetchUsEarnings, fetchUsFundamentals, fetchUsQuote, fetchUsQuotesBatch } from "./us";
 import { computeSignals, type Signal } from "@/lib/signals";
 
 export * from "./types";
@@ -98,6 +105,33 @@ export async function getFundamentals(symbolInput: string, marketHint?: Market):
       return map.get(symbol) ?? null;
     }
     return await cached(`fundamentals:US:${symbol}`, FUNDAMENTALS_TTL_MS, () => fetchUsFundamentals(symbol));
+  } catch {
+    return null;
+  }
+}
+
+const EARNINGS_TTL_MS = 60 * 60_000; // same cadence as fundamentals — this doesn't move intraday either
+
+/**
+ * Returns null when unavailable — a bank/insurer isn't in TWSE's general
+ * quarterly-EPS dataset (see fetchTwseQuarterlyEpsAll), and that's shown as
+ * "no data" rather than silently misreporting a peer company's number.
+ */
+export async function getEarnings(symbolInput: string, marketHint?: Market): Promise<Earnings | null> {
+  const symbol = normalizeSymbol(symbolInput);
+  const market = marketHint ?? detectMarket(symbol);
+  try {
+    if (market === "TW") {
+      const [revenueMap, epsMap] = await Promise.all([
+        cachedMap("earnings:TW:revenue", EARNINGS_TTL_MS, fetchTwseMonthlyRevenueAll),
+        cachedMap("earnings:TW:eps", EARNINGS_TTL_MS, fetchTwseQuarterlyEpsAll),
+      ]);
+      const revenue = revenueMap.get(symbol);
+      const eps = epsMap.get(symbol);
+      if (!revenue && !eps) return null;
+      return { ...revenue, ...eps };
+    }
+    return await cached(`earnings:US:${symbol}`, EARNINGS_TTL_MS, () => fetchUsEarnings(symbol));
   } catch {
     return null;
   }

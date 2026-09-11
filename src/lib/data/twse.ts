@@ -1,5 +1,5 @@
 import { chunk, fetchWithTimeout } from "./cache";
-import type { Candle, ChartRange, Fundamentals, Quote } from "./types";
+import type { Candle, ChartRange, Earnings, Fundamentals, Quote } from "./types";
 import { findInUniverse, type UniverseEntry } from "./universe";
 
 // TWSE (Taiwan Stock Exchange) public data endpoints. No API key required.
@@ -234,6 +234,67 @@ export async function fetchTwseFundamentalsAll(): Promise<Map<string, Fundamenta
     map.set(row.Code, {
       peRatio: Number.isFinite(peRatio) && peRatio > 0 ? peRatio : undefined,
       dividendYield: Number.isFinite(dividendYield) && dividendYield > 0 ? dividendYield : undefined,
+    });
+  }
+  return map;
+}
+
+interface RevenueRow {
+  公司代號: string;
+  資料年月: string; // e.g. "11507" = ROC year 115, month 07
+  "營業收入-去年同月增減(%)": string;
+}
+
+/**
+ * TWSE's official monthly revenue open-data endpoint — the single most
+ * commonly watched "財報" figure for TW retail investors (公布得比季報快
+ * 很多), specifically the year-over-year growth rate. One request covers
+ * every listed company for the latest reported month.
+ */
+export async function fetchTwseMonthlyRevenueAll(): Promise<Map<string, Earnings>> {
+  const url = "https://openapi.twse.com.tw/v1/opendata/t187ap05_L";
+  const res = await fetchWithTimeout(url, 8000);
+  const rows = (await res.json()) as RevenueRow[];
+  const map = new Map<string, Earnings>();
+  for (const row of rows) {
+    const yoy = parseFloat(row["營業收入-去年同月增減(%)"]);
+    if (!row.公司代號 || !Number.isFinite(yoy)) continue;
+    const yearMonth = row.資料年月; // "11507"
+    const period =
+      yearMonth.length >= 5
+        ? `${parseInt(yearMonth.slice(0, -2), 10) + 1911}年${parseInt(yearMonth.slice(-2), 10)}月`
+        : undefined;
+    map.set(row.公司代號, { monthlyRevenueYoyPercent: round2(yoy), monthlyRevenuePeriod: period });
+  }
+  return map;
+}
+
+interface QuarterlyIncomeRow {
+  公司代號: string;
+  年度: string;
+  季別: string;
+  "基本每股盈餘（元）": string;
+}
+
+/**
+ * TWSE's official quarterly comprehensive-income-statement open-data
+ * endpoint — covers general/manufacturing industry companies (`_ci`
+ * suffix); TWSE publishes separate report codes for banks/insurers with a
+ * different statement shape, not covered here. A company missing from this
+ * dataset (financial-sector or otherwise) simply has no quarterly-EPS entry
+ * merged in — never a fabricated number.
+ */
+export async function fetchTwseQuarterlyEpsAll(): Promise<Map<string, Earnings>> {
+  const url = "https://openapi.twse.com.tw/v1/opendata/t187ap06_L_ci";
+  const res = await fetchWithTimeout(url, 8000);
+  const rows = (await res.json()) as QuarterlyIncomeRow[];
+  const map = new Map<string, Earnings>();
+  for (const row of rows) {
+    const eps = parseFloat(row["基本每股盈餘（元）"]);
+    if (!row.公司代號 || !Number.isFinite(eps)) continue;
+    map.set(row.公司代號, {
+      quarterlyEps: round2(eps),
+      quarterlyEpsPeriod: `${row.年度}年Q${row.季別}`,
     });
   }
   return map;

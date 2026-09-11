@@ -1,5 +1,5 @@
 import { cached, chunk, fetchWithTimeout } from "./cache";
-import type { Candle, ChartRange, Fundamentals, Quote } from "./types";
+import type { Candle, ChartRange, Earnings, Fundamentals, Quote } from "./types";
 import { findInUniverse } from "./universe";
 
 // Yahoo Finance's unofficial "chart" endpoint. No API key required. One call
@@ -272,6 +272,65 @@ export async function fetchUsFundamentals(symbol: string): Promise<Fundamentals 
     peRatio: r.trailingPE && Number.isFinite(r.trailingPE) && r.trailingPE > 0 ? round2(r.trailingPE) : undefined,
     dividendYield: normalizeYieldPercent(r.trailingAnnualDividendYield ?? r.dividendYield),
     marketCap: r.marketCap && Number.isFinite(r.marketCap) && r.marketCap > 0 ? r.marketCap : undefined,
+  };
+}
+
+interface YahooEarningsQuarter {
+  date: string; // e.g. "2Q2026" — fiscal label, not always the calendar quarter
+  actual?: { raw: number };
+  estimate?: { raw: number };
+  surprisePct?: string;
+  reportedDate?: { fmt: string };
+}
+
+interface YahooEarningsModule {
+  earningsChart?: {
+    quarterly?: YahooEarningsQuarter[];
+    earningsDate?: { raw: number }[];
+  };
+}
+
+interface YahooQuoteSummaryResponse {
+  quoteSummary: { result?: [{ earnings?: YahooEarningsModule }] };
+}
+
+/**
+ * Yahoo's quoteSummary "earnings" module — same crumb+cookie auth as the
+ * batch quote/fundamentals fetches above. Gives the last few reported
+ * quarters' actual-vs-estimate EPS (with surprise %) and the next expected
+ * earnings date, which TWSE's monthly-revenue/quarterly-EPS open data has
+ * no equivalent-free US source for otherwise.
+ */
+export async function fetchUsEarnings(symbol: string): Promise<Earnings | null> {
+  const auth = await getYahooAuth();
+  const crumbParam = auth ? `&crumb=${encodeURIComponent(auth.crumb)}` : "";
+  const url = `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(
+    symbol
+  )}?modules=earnings${crumbParam}`;
+  const res = await fetchWithTimeout(url, 5000, {
+    headers: {
+      "User-Agent": YAHOO_UA,
+      Accept: "application/json",
+      ...(auth ? { Cookie: auth.cookie } : {}),
+    },
+  });
+  const data = (await res.json()) as YahooQuoteSummaryResponse;
+  const chart = data.quoteSummary?.result?.[0]?.earnings?.earningsChart;
+  if (!chart) return null;
+
+  const quarters = chart.quarterly ?? [];
+  const latest = quarters[quarters.length - 1];
+  const nextEarningsDate = chart.earningsDate?.[0]?.raw
+    ? new Date(chart.earningsDate[0].raw * 1000).toISOString().slice(0, 10)
+    : undefined;
+
+  if (!latest?.actual) return nextEarningsDate ? { nextEarningsDate } : null;
+  const surprisePercent = latest.surprisePct ? parseFloat(latest.surprisePct) : undefined;
+  return {
+    quarterlyEps: round2(latest.actual.raw),
+    quarterlyEpsPeriod: latest.date,
+    epsSurprisePercent: surprisePercent != null && Number.isFinite(surprisePercent) ? round2(surprisePercent) : undefined,
+    nextEarningsDate,
   };
 }
 

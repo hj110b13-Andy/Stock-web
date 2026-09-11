@@ -58,3 +58,18 @@ export interface Fundamentals {
   dividendYield?: number;
   marketCap?: number;
 }
+
+export interface Earnings {
+  /** TW：最新月營收年增率(%)，台股投資人最常看的財報先行指標 */
+  monthlyRevenueYoyPercent?: number;
+  /** e.g. "2026年7月" */
+  monthlyRevenuePeriod?: string;
+  /** 最新一季每股盈餘（TW：元；US：美元） */
+  quarterlyEps?: number;
+  /** e.g. "115年Q2"（TW）或 "2026 Q2"（US） */
+  quarterlyEpsPeriod?: string;
+  /** US only：實際 EPS 相對市場預期的驚喜幅度(%)，正值代表優於預期 */
+  epsSurprisePercent?: number;
+  /** US only：下次公布財報的日期（ISO 格式） */
+  nextEarningsDate?: string;
+}

@@ -1,5 +1,6 @@
-import { findSymbolByName, getChart, getIndices, getMultiSignalStocks, getQuote, searchStocks } from "@/lib/data";
+import { findSymbolByName, getChart, getEarnings, getIndices, getMultiSignalStocks, getQuote, searchStocks } from "@/lib/data";
 import type { Market } from "@/lib/data";
+import { fetchNews } from "@/lib/data/news";
 import { callAiProviders } from "@/lib/ai/provider";
 import type { ChatTurn } from "@/lib/ai/types";
 
@@ -36,6 +37,16 @@ async function buildStockGrounding(
     getChart(target.symbol, "3m", target.market),
   ]);
   if (!quote) return undefined;
+
+  // Fired only once the quote resolves the actual market (target.market may
+  // be undefined when guessed from text) and gives us the real company name
+  // to search news for — a bare ticker like "2330" is a much weaker news
+  // query than "台積電".
+  const [earnings, news] = await Promise.all([
+    getEarnings(quote.symbol, quote.market).catch(() => null),
+    fetchNews(`${quote.name} ${quote.symbol}`, 5).catch(() => []),
+  ]);
+
   const changeLabel = quote.change >= 0 ? "上漲" : "下跌";
   const lines = [
     `股票：${quote.name}（${quote.symbol}，${quote.market === "TW" ? "台股" : "美股"}）`,
@@ -49,6 +60,28 @@ async function buildStockGrounding(
     lines.push("（歷史走勢資料目前無法取得）");
   }
   lines.push("（來源：即時/近即時公開資料）");
+
+  if (earnings) {
+    const parts: string[] = [];
+    if (earnings.monthlyRevenueYoyPercent != null) {
+      parts.push(`${earnings.monthlyRevenuePeriod ?? "最新月"}營收年增率 ${earnings.monthlyRevenueYoyPercent >= 0 ? "+" : ""}${earnings.monthlyRevenueYoyPercent}%`);
+    }
+    if (earnings.quarterlyEps != null) {
+      parts.push(`${earnings.quarterlyEpsPeriod ?? "最新一季"} EPS ${earnings.quarterlyEps}${quote.currency === "TWD" ? "元" : ""}`);
+    }
+    if (earnings.epsSurprisePercent != null) {
+      parts.push(`優於市場預期 ${earnings.epsSurprisePercent}%`);
+    }
+    if (earnings.nextEarningsDate) {
+      parts.push(`下次公布財報日期約 ${earnings.nextEarningsDate}`);
+    }
+    if (parts.length > 0) lines.push(`財報：${parts.join("；")}`);
+  }
+
+  if (news.length > 0) {
+    lines.push(`近期相關新聞：\n${news.map((n) => `- ${n.title}${n.source ? `（${n.source}）` : ""}`).join("\n")}`);
+  }
+
   return { symbol: quote.symbol, text: lines.join("\n") };
 }
 
@@ -153,8 +186,11 @@ export async function answerQuestion(
   // market the question is about), plus the specific stock's data when one
   // is targeted, so the model can reason about TW/US cross-market influence
   // (e.g. Nasdaq overnight moves affecting semiconductor names) instead of
-  // only seeing the one stock in isolation.
-  const [stockGrounding, indexGrounding, moversGrounding, holdingsGrounding] = await Promise.all([
+  // only seeing the one stock in isolation. General market news is likewise
+  // always fetched (not just when a stock is targeted) — it's what used to
+  // be missing entirely whenever someone asked about "資訊面"/總經 without
+  // naming a specific stock, which had no grounding path to attach it to.
+  const [stockGrounding, indexGrounding, moversGrounding, holdingsGrounding, marketNews] = await Promise.all([
     target ? buildStockGrounding(target) : Promise.resolve(undefined),
     getIndices()
       .then((indices) => {
@@ -164,13 +200,23 @@ export async function answerQuestion(
       .catch(() => ""),
     wantsMovers ? buildMoversGrounding() : Promise.resolve(""),
     buildHoldingsGrounding(holdings).catch(() => ""),
+    Promise.all([fetchNews("台股", 5), fetchNews("美股", 5)]).catch(() => [[], []] as const),
   ]);
 
   if (stockGrounding) groundedSymbol = stockGrounding.symbol;
 
+  const [twNews, usNews] = marketNews;
+  const marketNewsText = [
+    twNews.length > 0 ? `台股：\n${twNews.map((n) => `- ${n.title}${n.source ? `（${n.source}）` : ""}`).join("\n")}` : "",
+    usNews.length > 0 ? `美股：\n${usNews.map((n) => `- ${n.title}${n.source ? `（${n.source}）` : ""}`).join("\n")}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
   const grounding = [
     stockGrounding ? `【個股資料】\n${stockGrounding.text}` : "",
     indexGrounding ? `【大盤概況（台股＋美股）】\n${indexGrounding}` : "",
+    marketNewsText ? `【近期市場新聞】\n${marketNewsText}` : "",
     moversGrounding ? `【今日焦點數據（漲幅榜、技術訊號共振股）】\n${moversGrounding}` : "",
     holdingsGrounding ? `【我的關注清單/持股】\n${holdingsGrounding}` : "",
   ]
@@ -180,7 +226,8 @@ export async function answerQuestion(
   const system = [
     "你是一個股票研究網站上的助理，回答繁體中文問題。",
     "風格要求（很重要）：直接講重點、先講結論，語氣像在跟人對話而不是寫報告。不要模稜兩可、不要鋪陳、不要重複同樣的免責聲明兩次以上。能一兩句話講完的就不要條列；只有在真的有好幾個平行項目時才用條列，且每項一行、不要展開解釋。",
-    "你會拿到「個股資料」（使用者問特定股票時）、「大盤概況」（台股加權指數、道瓊、S&P 500、那斯達克），有時候還有「今日焦點數據」（今日漲幅榜、技術訊號共振股）、「我的關注清單/持股」（使用者關注清單裡每一檔的即時報價，有設定成本/股數的還會有損益）。",
+    "你會拿到「個股資料」（使用者問特定股票時，內含報價/K線，資料充足時還有「財報」跟「近期相關新聞」兩行）、「大盤概況」（台股加權指數、道瓊、S&P 500、那斯達克）、「近期市場新聞」（台股/美股各幾則近期真實新聞標題，來源是 Google 新聞），有時候還有「今日焦點數據」（今日漲幅榜、技術訊號共振股）、「我的關注清單/持股」（使用者關注清單裡每一檔的即時報價，有設定成本/股數的還會有損益）。",
+    "使用者問『資訊面/消息面/新聞/為什麼漲跌/財報』這類問題時：直接引用「近期市場新聞」或個股資料裡的「近期相關新聞」「財報」講重點（標題、大概方向、來源即可，不用逐字複述），這些都是真實抓到的資料，不要再回答『沒有新聞管道』『系統僅提供報價數據』這種話——現在有了。新聞/財報資料不夠或抓不到時才老實說目前查不到最新消息，不要就此完全略過不提。",
     "拿到「我的關注清單/持股」時（通常是使用者按了『分析我的關注清單』或問『幫我看看我關注的股票』），逐檔講重點：現價/今日漲跌、有損益資料的講清楚賺賠多少錢跟百分比、你對這檔現況的看法；沒設定成本的那幾檔就只講現況看法，不用特別提醒『你沒填成本』這種瑣事。多檔的話用條列，每檔一行講完，不要每檔都展開成一大段。",
     "台股與美股常互相影響（例如美股科技股/半導體夜間走勢，隔天常牽動台股電子權值股），有明顯關聯時才連結兩邊資料分析，沒有的話不用勉強牽拖。",
     "這個網站現在只有你（開發者）跟家人知道密碼才能進來，不是對外公開的服務，使用者問『有哪些股票不錯/推薦一下/幫我選股/這支該不該買』這類問題時，直接根據拿到的資料給明確的個人看法即可，包括『我覺得這幾檔現在值得留意』『這支技術面偏弱，我會先觀望』這種直接的話，不用迴避、不用只丟數據不表態、也不用每次都加但書。看法要根據資料裡實際的數字說理由（例如均量倍數、連漲天數、均線位置、本益比、漲跌幅），不要憑空瞎猜；資料不夠支撐判斷時就老實說資料不足，不要硬掰。",
