@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import SiteHeader from "@/components/SiteHeader";
 import ChatWidget from "@/components/ChatWidget";
+import PriceAlertWatcher from "@/components/PriceAlertWatcher";
 import AuthProvider from "@/components/AuthProvider";
 import WatchlistSync from "@/components/WatchlistSync";
 import { SITE_NAME, SITE_URL } from "@/lib/site";
@@ -53,6 +54,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         <p className="mt-1">股情雷達 StockRadar · Demo</p>
       </footer>
       <ChatWidget />
+      <PriceAlertWatcher />
       {authEnabled && <WatchlistSync />}
     </>
   );

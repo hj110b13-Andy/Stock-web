@@ -5,6 +5,7 @@ import AskAboutButton from "@/components/AskAboutButton";
 import WatchlistButton from "@/components/WatchlistButton";
 import FundamentalsCard from "@/components/FundamentalsCard";
 import LiveQuoteHeader from "@/components/LiveQuoteHeader";
+import PriceAlertForm from "@/components/PriceAlertForm";
 import { getQuote, getFundamentals, detectMarket, normalizeSymbol } from "@/lib/data";
 import type { Market } from "@/lib/data";
 import { formatPercent, formatPrice } from "@/lib/format";
@@ -93,6 +94,8 @@ export default async function StockDetailPage({ params, searchParams }: PageProp
       </section>
 
       <FundamentalsCard fundamentals={fundamentals} currency={quote.currency} />
+
+      <PriceAlertForm symbol={quote.symbol} market={quote.market} name={quote.name} currency={quote.currency} />
 
       <StockChart symbol={quote.symbol} market={quote.market} currentPrice={quote.price} />
       <p className="text-xs text-(--text-muted)">
