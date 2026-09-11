@@ -23,6 +23,7 @@ interface ModelsListResponse {
 interface GeminiResponse {
   candidates?: Array<{
     content?: { parts?: Array<{ text?: string }> };
+    finishReason?: string;
   }>;
   promptFeedback?: { blockReason?: string };
 }
@@ -88,6 +89,17 @@ async function callGemini(
   const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
   if (!text.trim()) {
     throw new Error(data.promptFeedback?.blockReason ?? `Gemini（${model}）回應為空`);
+  }
+  // A response cut off by the output-token cap reads as a sentence stopping
+  // mid-word (observed on the daily brief once it grew to 550-800 Chinese
+  // characters — CJK text costs noticeably more tokens per character than
+  // the maxOutputTokens budget assumed, and that got silently served to
+  // every visitor for the rest of the day since a non-empty string was
+  // still "success" as far as this function was concerned). Surfacing it as
+  // a failure here lets the caller fall through to Anthropic, or to the
+  // canned "raw data" answer, instead of quietly shipping a broken-off reply.
+  if (data.candidates?.[0]?.finishReason === "MAX_TOKENS") {
+    throw new Error(`Gemini（${model}）回覆被輸出長度上限截斷`);
   }
   return text.trim();
 }

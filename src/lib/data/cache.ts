@@ -110,7 +110,15 @@ const inFlight = new Map<string, Promise<unknown>>();
  * came back from Redis, so a key used with two different types would hand
  * one caller the other's value with no compile-time or runtime complaint.
  */
-export function cached<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
+export interface CachedOptions {
+  /** Skip both the memory and Redis read and recompute unconditionally —
+   *  still writes the fresh result over whatever was cached. For manually
+   *  clearing out a bad cached value (e.g. a truncated AI response) without
+   *  waiting out its TTL, rather than a knob callers reach for routinely. */
+  forceRefresh?: boolean;
+}
+
+export function cached<T>(key: string, ttlMs: number, load: () => Promise<T>, opts: CachedOptions = {}): Promise<T> {
   const pending = inFlight.get(key);
   if (pending) return pending as Promise<T>;
 
@@ -120,7 +128,7 @@ export function cached<T>(key: string, ttlMs: number, load: () => Promise<T>): P
   // synchronously up to its first await — i.e. before inFlight.set() below
   // — leaving a window in which a re-entrant call still saw a miss.
   const promise = Promise.resolve()
-    .then(() => runCached<T>(key, ttlMs, load))
+    .then(() => runCached<T>(key, ttlMs, load, opts))
     .finally(() => {
       inFlight.delete(key);
     });
@@ -146,7 +154,14 @@ export async function cachedMap<K, V>(
   return new Map(entries);
 }
 
-async function runCached<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
+async function runCached<T>(key: string, ttlMs: number, load: () => Promise<T>, opts: CachedOptions = {}): Promise<T> {
+  if (opts.forceRefresh) {
+    const value = await load();
+    writeMemory(key, value, ttlMs);
+    if (kvEnabled && redis) await writeRedis(key, value, ttlMs);
+    return value;
+  }
+
   const local = readMemory(key);
   if (local.hit) return local.value as T;
 
@@ -168,23 +183,25 @@ async function runCached<T>(key: string, ttlMs: number, load: () => Promise<T>):
   // configured, and the safety net that stops every request re-fetching
   // upstream while a configured Redis is unreachable or rate-limited.
   writeMemory(key, value, ttlMs);
-
-  if (kvEnabled && redis) {
-    if (value instanceof Map || value instanceof Set) {
-      // Would silently round-trip to {} — see cachedMap. Loud in the log and
-      // degraded to the in-memory cache, rather than quietly corrupt.
-      console.error(`[cache] not storing a ${value.constructor.name} in Redis for key "${key}" — JSON can't represent it; use cachedMap`);
-    } else {
-      try {
-        await redis.set(key, { v: value, e: Date.now() + ttlMs } satisfies CacheEnvelope, {
-          ex: Math.max(1, Math.round(ttlMs / 1000)),
-        });
-      } catch {
-        // best-effort; a shared-cache write failure shouldn't break the response
-      }
-    }
-  }
+  if (kvEnabled && redis) await writeRedis(key, value, ttlMs);
   return value;
+}
+
+async function writeRedis(key: string, value: unknown, ttlMs: number): Promise<void> {
+  if (!redis) return;
+  if (value instanceof Map || value instanceof Set) {
+    // Would silently round-trip to {} — see cachedMap. Loud in the log and
+    // degraded to the in-memory cache, rather than quietly corrupt.
+    console.error(`[cache] not storing a ${value.constructor.name} in Redis for key "${key}" — JSON can't represent it; use cachedMap`);
+    return;
+  }
+  try {
+    await redis.set(key, { v: value, e: Date.now() + ttlMs } satisfies CacheEnvelope, {
+      ex: Math.max(1, Math.round(ttlMs / 1000)),
+    });
+  } catch {
+    // best-effort; a shared-cache write failure shouldn't break the response
+  }
 }
 
 /** Splits an array into fixed-size groups — used to keep batch-quote request

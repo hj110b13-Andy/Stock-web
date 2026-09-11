@@ -48,7 +48,7 @@ async function buildTwChipsSummary(
   return filtered.length > 0 ? filtered.join("\n") : "（今日主要漲跌個股無明顯法人籌碼資料）";
 }
 
-export async function getDailyBrief(): Promise<DailyBrief> {
+export async function getDailyBrief(forceRefresh = false): Promise<DailyBrief> {
   return cached(`daily-brief:${todayKeyTaipei()}`, BRIEF_TTL_MS, async () => {
     const [indices, twGainers, usGainers, twLosers, usLosers, twMomentum, usMomentum, twNews, usNews] =
       await Promise.all([
@@ -119,9 +119,14 @@ export async function getDailyBrief(): Promise<DailyBrief> {
     // in client-side by DailyBriefCard, not blocking the rest of the
     // homepage), so trading some extra patience for a completed answer
     // instead of a premature abort is the right tradeoff here.
+    // maxOutputTokens is generous relative to the ~550-800 *character* target
+    // in the prompt: CJK text costs noticeably more tokens per character than
+    // that budget first assumed (a live run got cut off mid-sentence at
+    // 1600), and a completed answer is worth far more than saving a few
+    // hundred unused tokens on a call that isn't latency-sensitive anyway.
     const result = await callAiProviders(system, [{ role: "user", content: `參考資料：\n${grounding}` }], {
       timeoutMs: 25000,
-      maxOutputTokens: 1600,
+      maxOutputTokens: 3000,
     });
 
     if (result.usedAi) {
@@ -142,5 +147,5 @@ export async function getDailyBrief(): Promise<DailyBrief> {
       .join(" ");
 
     return { text: fallback, usedAi: false, generatedAt: new Date().toISOString() };
-  });
+  }, { forceRefresh });
 }

@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getDailyBrief } from "@/lib/ai/brief";
 
 // Brief generation now allows up to a 25s Gemini call (see brief.ts) — this
@@ -10,9 +10,15 @@ export const maxDuration = 60;
 // this moved off the homepage's server-rendered blocking path (the brief
 // generation call is the slowest thing on the page on a cache-cold day, same
 // class of problem MomentumSection solved for /highlights).
-export async function GET() {
+// `?refresh=1` forces regeneration, overwriting whatever is currently
+// cached — a manual escape hatch for clearing out a bad cached value (e.g. a
+// response truncated by the output-token cap) without waiting out the ~25h
+// TTL. Gated by the same password-gate cookie as everything else on the
+// site, not separately restricted.
+export async function GET(req: NextRequest) {
+  const forceRefresh = req.nextUrl.searchParams.get("refresh") === "1";
   try {
-    const brief = await getDailyBrief();
+    const brief = await getDailyBrief(forceRefresh);
     return NextResponse.json({ brief });
   } catch (err) {
     console.error("[api/daily-brief] failed:", err);
