@@ -4,6 +4,10 @@ export interface WatchlistItem {
   symbol: string;
   market: Market;
   name: string;
+  /** Average cost per share, in the stock's own currency (TWD for TW, USD for US). Optional — a plain watch-only entry has neither this nor `shares`. */
+  costBasis?: number;
+  /** Shares held, in the same per-share unit the quote price is already denominated in (not 張). */
+  shares?: number;
 }
 
 const STORAGE_KEY = "stockradar:watchlist";
@@ -70,4 +74,23 @@ export function toggleWatch(item: WatchlistItem): boolean {
 /** Overwrites the whole list — used when merging in a signed-in account's server-side watchlist. */
 export function replaceWatchlist(items: WatchlistItem[]) {
   save(items);
+}
+
+/**
+ * Sets or clears the cost-basis/shares on an existing watchlist entry.
+ * `undefined` for either field clears it (e.g. typing a field back to empty
+ * should drop that field, not persist a stale value). No-ops if the symbol
+ * isn't actually being watched — this edits a holding, it doesn't add one.
+ */
+export function updateHolding(
+  symbol: string,
+  market: Market,
+  holding: { costBasis?: number; shares?: number }
+) {
+  const list = getWatchlist();
+  const idx = list.findIndex((i) => i.symbol === symbol && i.market === market);
+  if (idx < 0) return;
+  const next = [...list];
+  next[idx] = { ...next[idx], costBasis: holding.costBasis, shares: holding.shares };
+  save(next);
 }

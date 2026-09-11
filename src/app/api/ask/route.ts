@@ -1,9 +1,34 @@
 import { NextRequest, NextResponse } from "next/server";
-import { answerQuestion } from "@/lib/ai/ask";
+import { answerQuestion, type HoldingInput } from "@/lib/ai/ask";
 import type { ChatTurn } from "@/lib/ai/types";
 
 const MAX_HISTORY_TURNS = 10;
 const MAX_TURN_LENGTH = 2000;
+const MAX_HOLDINGS = 50;
+
+// Mirrors the client's localStorage WatchlistItem shape, but this is
+// unvalidated request input (anyone can POST here, not just the chat
+// widget), so every field is re-checked rather than trusted as typed.
+function parseHoldings(raw: unknown): HoldingInput[] {
+  if (!Array.isArray(raw)) return [];
+  const holdings: HoldingInput[] = [];
+  for (const entry of raw.slice(0, MAX_HOLDINGS)) {
+    if (
+      entry &&
+      typeof entry === "object" &&
+      typeof entry.symbol === "string" &&
+      entry.symbol.length > 0 &&
+      entry.symbol.length <= 20 &&
+      (entry.market === "TW" || entry.market === "US") &&
+      typeof entry.name === "string"
+    ) {
+      const costBasis = typeof entry.costBasis === "number" && Number.isFinite(entry.costBasis) && entry.costBasis >= 0 ? entry.costBasis : undefined;
+      const shares = typeof entry.shares === "number" && Number.isFinite(entry.shares) && entry.shares >= 0 ? entry.shares : undefined;
+      holdings.push({ symbol: entry.symbol, market: entry.market, name: entry.name.slice(0, 100), costBasis, shares });
+    }
+  }
+  return holdings;
+}
 
 function parseHistory(raw: unknown): ChatTurn[] {
   if (!Array.isArray(raw)) return [];
@@ -25,7 +50,7 @@ function parseHistory(raw: unknown): ChatTurn[] {
 export async function POST(req: NextRequest) {
   // `unknown` rather than a declared shape: this is unvalidated request
   // input, and typing it as strings up front invites trusting it as such.
-  let body: { question?: unknown; symbol?: unknown; history?: unknown };
+  let body: { question?: unknown; symbol?: unknown; history?: unknown; holdings?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -49,8 +74,9 @@ export async function POST(req: NextRequest) {
       : undefined;
 
   const history = parseHistory(body.history);
+  const holdings = parseHoldings(body.holdings);
   try {
-    const result = await answerQuestion(question, symbol, history);
+    const result = await answerQuestion(question, symbol, history, holdings);
     return NextResponse.json(result);
   } catch (err) {
     // The widget renders `data.error` on a non-OK response; without this an

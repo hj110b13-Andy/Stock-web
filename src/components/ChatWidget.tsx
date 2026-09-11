@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ASK_ABOUT_EVENT, type AskAboutDetail } from "@/lib/chatEvents";
+import { getWatchlist } from "@/lib/watchlist";
 import MarkdownLite from "./MarkdownLite";
 
 interface ChatMessage {
@@ -34,7 +35,7 @@ export default function ChatWidget() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, loading]);
 
-  async function send(question: string) {
+  async function send(question: string, holdings?: ReturnType<typeof getWatchlist>) {
     const trimmed = question.trim();
     if (!trimmed || loading) return;
     const history = messages.map((m) => ({ role: m.role, content: m.text }));
@@ -45,7 +46,7 @@ export default function ChatWidget() {
       const res = await fetch("/api/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: trimmed, symbol: contextSymbol?.symbol, history }),
+        body: JSON.stringify({ question: trimmed, symbol: contextSymbol?.symbol, history, holdings }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "發生錯誤");
@@ -105,6 +106,14 @@ export default function ChatWidget() {
           <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto px-4 py-3">
             {messages.length === 0 && (
               <div className="space-y-2">
+                {getWatchlist().length > 0 && (
+                  <button
+                    onClick={() => send("幫我分析一下我關注清單裡的每一檔股票", getWatchlist())}
+                    className="block w-full rounded-md border border-(--accent) bg-(--accent-soft) px-3 py-2 text-left text-xs font-medium text-(--accent) hover:opacity-90"
+                  >
+                    📋 分析我的關注清單（{getWatchlist().length} 檔）
+                  </button>
+                )}
                 <p className="text-xs text-(--text-muted)">試試看這樣問：</p>
                 {SUGGESTIONS.map((s) => (
                   <button

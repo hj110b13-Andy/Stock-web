@@ -23,9 +23,19 @@ function isWatchlistItem(v: unknown): v is WatchlistItem {
   );
 }
 
+function finitePositive(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined;
+}
+
 /** Keeps only the recognised fields, so nothing else a client sends is persisted. */
 function normalize(item: WatchlistItem): WatchlistItem {
-  return { symbol: item.symbol, market: item.market, name: item.name };
+  return {
+    symbol: item.symbol,
+    market: item.market,
+    name: item.name,
+    costBasis: finitePositive(item.costBasis),
+    shares: finitePositive(item.shares),
+  };
 }
 
 export async function GET() {

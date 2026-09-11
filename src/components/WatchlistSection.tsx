@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useSyncExternalStore } from "react";
-import StockTable from "@/components/StockTable";
+import WatchlistTable, { type HoldingItem } from "@/components/WatchlistTable";
 import MarketTabs from "@/components/MarketTabs";
 import type { Quote, SearchItem } from "@/lib/data";
 import { WATCHLIST_CHANGED_EVENT, getWatchlist, type WatchlistItem } from "@/lib/watchlist";
@@ -91,9 +91,13 @@ export default function WatchlistSection() {
   // stray lowercase entry (e.g. hand-edited localStorage) degrades to
   // "unavailable" for that one symbol instead of silently dropping it here
   // while a real quote for it was actually fetched successfully.
-  const watchedKeys = new Set(list.map((w) => `${w.market}:${w.symbol.toUpperCase()}`));
-  const displayItems = (items ?? [])
-    .filter((i) => watchedKeys.has(`${i.market}:${i.symbol.toUpperCase()}`))
+  const holdingByKey = new Map(list.map((w) => [`${w.market}:${w.symbol.toUpperCase()}`, w]));
+  const displayItems: HoldingItem[] = (items ?? [])
+    .filter((i) => holdingByKey.has(`${i.market}:${i.symbol.toUpperCase()}`))
+    .map((i) => {
+      const holding = holdingByKey.get(`${i.market}:${i.symbol.toUpperCase()}`);
+      return { ...i, costBasis: holding?.costBasis, shares: holding?.shares };
+    })
     .sort((a, b) => {
       const diff = sortBy === "name" ? a.name.localeCompare(b.name) : a[sortBy] - b[sortBy];
       return sortDir === "desc" ? -diff : diff;
@@ -155,8 +159,8 @@ export default function WatchlistSection() {
         </div>
       ) : (
         <MarketTabs
-          tw={<StockTable items={displayItems.filter((i) => i.market === "TW")} emptyLabel="尚未關注任何台股" />}
-          us={<StockTable items={displayItems.filter((i) => i.market === "US")} emptyLabel="尚未關注任何美股" />}
+          tw={<WatchlistTable items={displayItems.filter((i) => i.market === "TW")} emptyLabel="尚未關注任何台股" />}
+          us={<WatchlistTable items={displayItems.filter((i) => i.market === "US")} emptyLabel="尚未關注任何美股" />}
         />
       )}
     </section>
