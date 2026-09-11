@@ -7,11 +7,17 @@
 
 ## 這是什麼專案
 
-**股情雷達 StockRadar**——公開、免費的台股／美股股票研究網站。即時查詢報價、互動 K 線圖、
-篩選排行、AI 問答。Next.js (App Router) + TypeScript + Tailwind CSS，圖表用
+**股情雷達 StockRadar**——台股／美股股票研究網站。即時查詢報價、互動 K 線圖、篩選排行、
+AI 問答。Next.js (App Router) + TypeScript + Tailwind CSS，圖表用
 [lightweight-charts](https://github.com/tradingview/lightweight-charts)。
 
-- **正式站**：https://stock-web-blond.vercel.app
+**2026-09-11 起改為私人／家人使用**（見下方工作日誌）：網站現在有進入密碼保護
+（`src/proxy.ts` + `/unlock`），不再是對外公開服務；AI 問答也因此改成會直接給明確的
+個人看法/推薦，不再強制客觀中立、不再附加免責聲明——**這個決定的前提是「網站已經真的做了
+存取限制」，如果之後又要把網站改回公開，AI 問答的系統提示詞（`lib/ai/ask.ts`）務必要
+改回客觀描述、不做買賣建議的版本，順序不能顛倒。**
+
+- **正式站**：https://stock-web-blond.vercel.app（進入密碼預設寫在 `src/app/api/unlock/route.ts`，或看有沒有設定 `SITE_PASSWORD` 環境變數蓋掉它）
 - **GitHub**：hj110b13-Andy/Stock-web
 - **開發分支**：`claude/relaxed-curie-c69kp0`（所有工作都在這個分支上，push 上去 Vercel 會自動部署）
 - **功能完整說明、環境變數設定、資料來源限制**：見 `README.md`，這份文件不重複列，只補「檔案功能地圖」跟「工作日誌」。
@@ -94,12 +100,18 @@ src/
    ├─ chatEvents.ts                  跨元件溝通用的事件（例如 AskAboutButton 通知 ChatWidget 换聚焦股票）
    └─ site.ts                        網站名稱/網址常數（SEO metadata 用）
 
+├─ proxy.ts                          Next.js 16 的 proxy（原 middleware）：全站密碼保護閘門，
+│                                     沒有 site_unlocked cookie 一律導去 /unlock，含 API 路由
+└─ app/
+   ├─ unlock/page.tsx + UnlockForm.tsx  密碼輸入頁
+   └─ api/unlock/route.ts               驗證密碼、設定 cookie（預設密碼寫死在這個檔案）
+
 根目錄:
 ├─ README.md          完整功能說明、環境變數設定、資料來源與限制、專案結構、設計慣例
 ├─ CLAUDE.md           使用者要求的品保流程規則（每次對話都要照做，見下方摘要）
 ├─ AGENTS.md            Next.js 版本提醒（這個版本跟訓練資料的 Next.js 可能有差異，寫程式前看 node_modules/next/dist/docs/）
 ├─ vercel.json          Vercel Cron 排程設定（每天觸發每日快報預生成）
-└─ .env.example         需要的環境變數範例（AI API key、Redis、Google OAuth，全部選用）
+└─ .env.example         需要的環境變數範例（AI API key、Redis、Google OAuth、SITE_PASSWORD，全部選用）
 ```
 
 ## 目前所有功能（快速索引，細節見 README.md）
@@ -112,13 +124,21 @@ src/
 ## 重要慣例與限制
 
 - **紅漲綠跌**：台灣/中國市場慣例，跟美股常見的反過來，全站配色與 `format.ts` 都照這個做。
-- **不提供投資建議**：技術訊號、AI 快報都是客觀數據描述，不是「建議買賣」或「預測上漲」——這是法律考量（台灣證券投顧法規），不是隨便加的免責聲明，改動 AI prompt 或訊號文案時要注意別越界。
+- **AI 問答的建議尺度跟網站是否公開綁在一起，不是單純的文案風格選擇**：網站現在有密碼保護
+  （見下方工作日誌 2026-09-11、`src/proxy.ts`），只有使用者跟家人用，所以 `lib/ai/ask.ts`
+  的系統提示詞允許直接給明確個人看法/推薦。**這個前提很重要**：台灣證券投顧法規管的是「對不
+  特定多數人」提供投資推介，判斷基準是網站有沒有做存取限制，不是使用者自己覺得是不是私人
+  用途。如果之後把密碼保護拿掉、或網站又變成任何人都能進來，AI 問答務必要改回客觀數據描述、
+  不做買賣建議/漲跌預測的版本（`getMultiSignalStocks` 在 `lib/data/index.ts` 的註解本來就是
+  照這個原則設計的）——**不要因為看到這裡的舊版指示殘留就假設現在還是客觀中立的版本，先看
+  `lib/ai/ask.ts` 目前實際的系統提示詞內容再判斷。**
 - **雙市場一律用分頁，不並排**：`MarketTabs` 元件，全站慣例。
-- **這個 sandbox 開發環境對外網路被組織政策限制**：連不到 TWSE/Yahoo 上游、連不到正式站
-  `stock-web-blond.vercel.app`、也沒有安裝 Playwright/Puppeteer。本機測試時這是正常現象，
-  不代表程式碼壞掉；用 `npm run build && npm run start` + curl 掃路由、加上寫 node 腳本直接
-  載入真正的模組執行，是這個環境目前能做到的最接近瀏覽器實測的驗證方式。部署到 Vercel 後
-  這些資料源會自動打通，不用改程式碼。
+- **這台本機開發環境（Windows PC）對外網路正常、能連到正式站**：跟這份文件更早版本記錄的
+  「sandbox 連不到外部」不同（那是另一台/另一個環境的限制，不是這台）。這台機器上已經裝好
+  Node.js（`winget install OpenJS.NodeJS.LTS`）跟 Playwright（裝在系統暫存資料夾，不在專案
+  `node_modules` 裡），可以真的開瀏覽器測試正式站，也能 `npm install && npm run build &&
+  npm run start` 在本機起服務打真實上游資料驗證修改。如果換了一台新環境，還是要重新確認一次
+  網路/工具限制，不要照抄這段。
 
 ## 品保流程（詳細規則見 CLAUDE.md，這裡只摘要）
 
@@ -177,6 +197,43 @@ src/
   不是 bug。
 - 一開始用 Playwright 測試「找不到登入按鈕/聊天輸入框/產業篩選 checkbox」：後來證實是測試腳本
   選錯選擇器（見上一輪工作日誌），不是網站壞掉。
+
+### 2026-09-11：網站改為密碼保護的私人工具，AI 問答改成直接給推薦（`bfc74c1`→`d85ad6c`）
+接續上一則工作日誌（AI 問答太囉唆、查無個股清單那次修正）之後，使用者接連提出三個進一步要求，
+過程中有一次重要的方向修正，記錄下來避免以後重複走一樣的路：
+
+1. **要求 AI「查每個股票、直接寫推薦哪檔及為何」**：這是具體個股買賣建議/漲跌預測，屬於證券
+   投顧業務，公開網站沒有執照這樣做有法律風險，`getMultiSignalStocks`（`lib/data/index.ts`）
+   的既有註解也明確寫著「deliberately not framed as about to rise...regulated investment
+   advice」。跟使用者說明後，**先**採用合規版本（`bfc74c1`）：擴大技術訊號共振股回覆數量到
+   12 檔、每檔附上具體數字（均量倍數/連漲天數/均線位置）講清楚客觀理由，但不做預測/推薦。
+2. **要求拿掉免責聲明，說看起來很亂**：先壓縮成結尾一句極短標籤（`51191bb`），但不能整個
+   拿掉——網站當時仍是公開的，完全沒提醒反而更像是在給投資建議，風險更大。
+3. **使用者說「這網站基本上只有自己跟家人用」，要求可以直接寫建不建議買**：**這裡是關鍵**——
+   網址 `stock-web-blond.vercel.app` 當時完全公開、沒有登入或密碼限制、任何人都能用、也能被
+   搜尋引擎收錄，跟「使用者自己覺得只有家人在用」是两回事。台灣證券投顧法規判斷的是網站有沒有
+   對不特定多數人公開，不是操作者的主觀意圖。**沒有先跟使用者說清楚這個落差、直接照字面要求
+   把 AI 改成會推薦買賣，會是這次修正裡最大的風險**。跟使用者說明後，使用者選擇「先做真正的
+   存取限制，再開放推薦」：
+   - `19ed951`：新增 `src/proxy.ts`（Next.js 16 用 proxy 取代 middleware，見
+     `node_modules/next/dist/docs/.../proxy.md`，這個版本的 Next.js 已經把 middleware 改名
+     為 proxy）+ `/unlock` 密碼頁 + `/api/unlock`。攔截所有請求（含 API，不是只擋頁面），
+     沒有 `site_unlocked` cookie 就導去 `/unlock`；密碼正確後 cookie 記住一年。密碼寫死在
+     `src/app/api/unlock/route.ts`（預設 `1118`，可用 `SITE_PASSWORD` 環境變數蓋掉）——
+     **這個 repo 是公開的**，寫死密碼等於密碼本身也公開，這件事已經明確告知使用者、使用者
+     知情並接受這個風險才這樣做，不是我自己決定要不要提醒。commit 這個檔案時一度被 Claude Code
+     的 auto mode classifier 擋下來（很可能是偵測到程式碼裡有疑似寫死的密碼字串），跟使用者
+     確認接受風險後才重新提交成功，**這是防護機制正常運作，不是 bug，不需要想辦法繞過**。
+   - 確認正式站密碼保護真的生效（未帶 cookie 打 API 會被導向 `/unlock`、密碼正確才放行）之後，
+     才動手改 `d85ad6c`：`lib/ai/ask.ts` 系統提示詞改成直接給明確個人看法/推薦，移除「絕對
+     不能說建議買」的限制，也移除免責聲明段落與 canned fallback 的「僅供參考」標籤。
+   - 已在正式站用真實 AI 驗證：問「直接推薦一支股票給我」，回答「我推薦彰銀（2801），它今天
+     大漲 3.54%...技術面同時創下 3 個月新高並站上 20 日均線，短線動能強勁。」不再迴避、不再
+     附加免責聲明。
+4. **這個決定綁在「網站現在有密碼保護」這個前提上，不是永久的文案風格改變**：如果之後密碼
+   保護被拿掉、或使用者又想把網站公開分享給更多人，AI 問答的系統提示詞務必要改回客觀數據
+   描述、不做買賣建議的版本——上面「重要慣例與限制」章節已經記錄這點，接手時看到 AI 直接給
+   推薦不要覺得奇怪，但也不要假設這個尺度在網站公開後還適用。
 
 ### 2026-09-11：使用者回饋 AI 問答太囉唆、問「有哪些股票不錯」卻回答查無資料（`927aa9d`）
 使用者實際用聊天問「今天有哪些股票不錯的嗎?感覺開始要上漲的?」，AI 回答「參考資料中未包含個別
