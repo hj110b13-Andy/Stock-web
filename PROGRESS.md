@@ -44,7 +44,11 @@ src/
 │     ├─ ask/route.ts                POST AI 問答（支援多輪對話歷史）
 │     ├─ watchlist/route.ts          GET/PUT 登入後自選股跨裝置同步
 │     ├─ auth/[...nextauth]/route.ts NextAuth（Google 登入）
-│     └─ cron/daily-brief/route.ts   Vercel Cron 排程觸發：預先生成當天 AI 快報
+│     ├─ cron/daily-brief/route.ts   Vercel Cron 排程觸發：預先生成當天 AI 快報
+│     ├─ cron/warm-cache/route.ts    背景預熱：由 .github/workflows/warm-cache.yml 每 5 分鐘
+│     │                              呼叫一次，預先算好 search/highlights/momentum/indices，
+│     │                              讓真正訪客幾乎都吃到現成資料
+│     └─ momentum/route.ts           GET 技術訊號共振股（給 highlights 頁的 client-side fetch用）
 │
 ├─ components/                       UI 元件（React, 'use client' 除非明確是 server component）
 │  ├─ StockChart.tsx                 K 線圖 + 成交量（lightweight-charts），會讀 CSS 變數換色
@@ -88,7 +92,10 @@ src/
    │  │                              精選跨產業大型股種子清單
    │  ├─ cache.ts                    共用 TTL 快取：cached()/cachedMap()，Redis 優先、記憶體備援、
    │  │                              single-flight 去重複、null 值也會被正確快取（見工作日誌，這層踩過最多坑）
-   │  ├─ kv.ts                       Redis 連線設定（Vercel KV / Upstash，選用，沒設定就退回記憶體快取）
+   │  ├─ kv.ts                       Redis 連線設定（Vercel KV / Upstash）——**2026-09-11 起正式站
+   │  │                              已經設定好並連接（Upstash 免費方案），不再是「選用但沒開」
+   │  │                              的狀態；程式碼邏輯仍然保留「沒設定就退回記憶體快取」的容錯，
+   │  │                              本機開發沒設這兩個環境變數一樣能跑，只是不會有跨伺服器共用
    │  └─ types.ts                    Market / Quote / Chart 等共用型別
    │
    ├─ ai/                            AI 問答與每日快報
@@ -122,8 +129,12 @@ src/
 ├─ README.md          完整功能說明、環境變數設定、資料來源與限制、專案結構、設計慣例
 ├─ CLAUDE.md           使用者要求的品保流程規則（每次對話都要照做，見下方摘要）
 ├─ AGENTS.md            Next.js 版本提醒（這個版本跟訓練資料的 Next.js 可能有差異，寫程式前看 node_modules/next/dist/docs/）
-├─ vercel.json          Vercel Cron 排程設定（每天觸發每日快報預生成）
-└─ .env.example         需要的環境變數範例（AI API key、Redis、Google OAuth、SITE_PASSWORD，全部選用）
+├─ vercel.json          Vercel Cron 排程設定（每天觸發每日快報預生成，注意：這個一天一次的頻率
+│                       不夠用來預熱 search/highlights，那個改用下面的 GitHub Actions）
+├─ .github/workflows/warm-cache.yml  每 5 分鐘呼叫 /api/cron/warm-cache 預熱快取（見工作日誌）
+└─ .env.example         需要的環境變數範例（AI API key、Redis、Google OAuth、SITE_PASSWORD，全部選用；
+                        Redis 這幾個雖然程式碼邏輯上是選用，但正式站現在已經設定好了，見下方
+                        「重要慣例與限制」）
 ```
 
 ## 目前所有功能（快速索引，細節見 README.md）
@@ -132,7 +143,8 @@ src/
 搜尋/篩選頁（產業多選+價格區間）、每日焦點榜單（漲跌幅/成交量/技術訊號共振）、AI 多輪問答（可分析
 整個關注清單、依持股成本算損益）、每日 AI 快報（Vercel Cron 排程）、關注清單＋持股成本追蹤
 （localStorage，登入後跨裝置同步）、到價提醒（目前僅網頁內顯示）、深色模式、共用 Redis 快取
-（選用）、Google 登入（選用）、全站密碼保護（`SITE_PASSWORD`）、全站 SEO metadata。**全站不使用
+（**2026-09-11 起正式站已設定，Upstash 免費方案**）、背景自動預熱（GitHub Actions 每 5 分鐘）、
+Google 登入（選用）、全站密碼保護（`SITE_PASSWORD`）、全站 SEO metadata。**全站不使用
 任何示範/假資料**——抓不到就誠實顯示「資料暫缺」。**網站現在是密碼保護的私人工具，不是對外公開
 服務**，AI 問答會直接給明確推薦/看法，這點跟一般公開股票網站的「不做投資建議」慣例不同，見
 「重要慣例與限制」。
@@ -164,6 +176,39 @@ src/
 3. **規則三**：規則二做完後，派 1 個 Opus agent（額度不夠才臨時換模型頂替，之後仍改回 Opus）做一次完整地毯式檢查；抓到的問題自己修，修不好就讓 Opus 直接動手；之後只需針對這次修的問題再複查，直到 Opus 確認「沒有發現問題」才能回報「更新完成」。
 4. **規則四**：每次回覆使用者都要附上網站網址 https://stock-web-blond.vercel.app 。**網址跟密碼絕對不能寫在同一行/緊接在一起**（會被通訊軟體自動連結辨識吞掉變成壞連結，這件事已經真實發生過不只一次），務必分開兩行。
 5. **規則五（跨裝置接續）**：每次回覆使用者之前，都要更新這份 PROGRESS.md 並 push，讓其他裝置的 Claude Code 接得上。
+
+## 工作日誌（新到舊，只列有意義的變更；commit hash 對應 `git log`）
+
+### 2026-09-11：背景自動預熱機制 + Redis 共用快取，網站隨時保持「現成資料」（`052b811`）
+使用者要的不是「使用者觸發後才快」，是「網站自己一直在背景更新，有人點進來就直接看到現成
+資料」。這需要兩個東西合起來才會真的有效，缺一個都不行：
+
+1. **背景排程主動預熱**（`052b811`）：新增 `/api/cron/warm-cache`，把 `/highlights`、
+   `/search`、首頁焦點排行需要的資料（台股+美股批次報價、技術訊號共振股、大盤指數）全部
+   預先算好進快取。**排程機制選 GitHub Actions（`.github/workflows/warm-cache.yml`，每 5
+   分鐘觸發一次）而不是 Vercel 自己的 Cron**——Vercel 免費方案的 Cron 一天只能跑一次，遠遠
+   不夠頻繁。這個 repo 的預設分支正好就是 `claude/relaxed-curie-c69kp0`，排程檔案推上去就會
+   生效，不用額外設定。
+   - **過程中發現並修好一個自己造成的回歸 bug**：`src/proxy.ts` 的密碼保護閘門攔截了
+     `/api/cron/*`，導致原本运作正常的每日快報排程（`vercel.json`）從密碼保護上線那天起，
+     每次觸發都被導去 `/unlock`（307），根本沒有真的執行到。已經在 `proxy.ts` 的 matcher
+     排除清單加上 `api/cron`。**教訓：任何排程/webhook 類的路由，本質上不可能帶瀏覽器的
+     session cookie，加全站認證閘門時一定要記得排除，不能只想著「使用者走的路徑」。**
+2. **Redis/KV 共用快取**：光有背景預熱還不夠——正式站是好幾台各自獨立的 Vercel serverless
+   伺服器，沒有共用儲存的話，`lib/data/cache.ts` 的記憶體快取是「每台伺服器自己記自己的」，
+   預熱可能只熱到其中一台，真正訪客的請求被導到另一台完全沒被預熱過的伺服器一樣要重新算。
+   引導使用者到 Vercel Storage 頁面設定 Upstash Redis（免費方案）並連接到專案——**這步驟是
+   使用者透過另一個 Claude（Chrome 擴充功能）在 Vercel 後台實際點擊完成的，我這邊只負責
+   引導步驟跟事後驗證**，我自己沒有 Vercel 後台的存取權限。
+
+驗證方式：正式站觸發一次 `/api/cron/warm-cache` 後，同時發送 5 個併發請求打
+`/api/search?market=TW`（刻意用併發測試，增加打到不同伺服器實例的機率），全部落在
+0.76-1.24 秒，沒有出現任何一個「完全沒被預熱過」的慢請求（之前這種情況會是 2-9+ 秒）——
+確認 Redis 真的讓多台伺服器共用同一份預熱結果。
+
+**誠實的邊界**：這個機制讓「幾乎每次造訪都吃到現成資料」變得可靠，但不能讓「真的從來沒人
+碰過的全新資料」瞬間出現——那個受限於要跟 TWSE/Yahoo 真的走一次網路的時間，是免費公開
+資料源的先天限制，這次沒辦法、也不打算為了這個去改用付費資料服務。
 
 ### 2026-09-11：技術訊號共振股再調整——確認硬底線在哪、盡量壓縮周圍空間（`115704d`）
 使用者追問技術訊號共振股那 ~5 秒背景載入能不能再快。**先做本機對照實驗，排除正式站網路波動
