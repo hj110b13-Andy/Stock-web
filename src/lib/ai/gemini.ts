@@ -55,7 +55,13 @@ async function listCandidateModels(apiKey: string): Promise<string[]> {
 async function callGemini(model: string, system: string, messages: ChatTurn[], apiKey: string): Promise<string> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
-  const res = await fetchWithTimeout(url, 8000, {
+  // Widened from 8s: the grounding prompt got noticeably bigger once
+  // chips/announcements/fundamentals/dual-locale news were added (see
+  // buildStockGrounding in lib/ai/ask.ts), and a longer input increases
+  // Gemini's generation time — 8s was already tight before that and started
+  // occasionally aborting valid, in-progress responses under the larger
+  // prompt rather than a real stall.
+  const res = await fetchWithTimeout(url, 12000, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
