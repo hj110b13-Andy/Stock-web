@@ -253,6 +253,19 @@ export function findInUniverse(symbol: string, market?: Market): UniverseEntry |
   return pool.find((e) => e.symbol.toUpperCase() === upper);
 }
 
+/**
+ * Finds a stock by scanning free-form text for a known company name as a
+ * substring (e.g. picks "鴻海" out of "鴻海現在多少錢" or "台積電" out of a
+ * longer sentence). Names are checked longest-first so a specific match
+ * (e.g. "台積電") wins over any shorter name that happens to also be a
+ * substring of the text. Used to ground the AI chat when a user types a
+ * company name instead of a ticker/code.
+ */
+export function findSymbolByName(text: string): UniverseEntry | undefined {
+  const pool = [...twUniverseSnapshot, ...US_UNIVERSE].sort((a, b) => b.name.length - a.name.length);
+  return pool.find((entry) => entry.name.length >= 2 && text.includes(entry.name));
+}
+
 export function sectorsFor(market: Market): string[] {
   const pool = market === "TW" ? twUniverseSnapshot : US_UNIVERSE;
   const set = new Set(pool.map((e) => e.sector));

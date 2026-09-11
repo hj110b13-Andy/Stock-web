@@ -40,6 +40,25 @@ export function formatMarketCap(value: number, currency: string): string {
   return `${symbol}${value.toLocaleString()}`;
 }
 
+/**
+ * Formats an ISO timestamp as Taipei wall-clock time (`YYYY/MM/DD HH:mm:ss`),
+ * computed via fixed UTC+8 offset arithmetic rather than
+ * `toLocaleString(..., { timeZone: "Asia/Taipei" })`. That Intl call reads
+ * differently between Vercel's Node runtime and a browser when the locale
+ * data available for "zh-TW" isn't identical on both sides, which produces
+ * two different strings for the same instant — a text mismatch that fails
+ * React hydration on every stock page. Plain arithmetic is deterministic
+ * across any JS engine, with or without full ICU data.
+ */
+export function formatTaipeiDateTime(isoString: string): string {
+  const date = new Date(isoString);
+  const taipei = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${taipei.getUTCFullYear()}/${pad(taipei.getUTCMonth() + 1)}/${pad(taipei.getUTCDate())} ${pad(
+    taipei.getUTCHours(),
+  )}:${pad(taipei.getUTCMinutes())}:${pad(taipei.getUTCSeconds())}`;
+}
+
 /** Taiwan/greater-China convention: red = up, green = down. */
 export function priceDirectionClass(change: number): string {
   if (change > 0) return "text-(--price-up)";

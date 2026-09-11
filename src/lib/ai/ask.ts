@@ -1,4 +1,4 @@
-import { getChart, getIndices, getQuote } from "@/lib/data";
+import { findSymbolByName, getChart, getIndices, getQuote } from "@/lib/data";
 import type { Market } from "@/lib/data";
 import { callAiProviders } from "@/lib/ai/provider";
 import type { ChatTurn } from "@/lib/ai/types";
@@ -40,6 +40,9 @@ async function buildStockGrounding(
 }
 
 function guessSymbolFromText(text: string): { symbol: string; market: Market } | undefined {
+  const byName = findSymbolByName(text);
+  if (byName) return { symbol: byName.symbol, market: byName.market };
+
   const matches = text.toUpperCase().match(SYMBOL_PATTERN);
   if (!matches) return undefined;
   for (const m of matches) {
