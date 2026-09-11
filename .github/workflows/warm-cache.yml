@@ -1,0 +1,22 @@
+name: Warm StockRadar cache
+
+# Vercel's own Cron feature is capped at once a day on the Hobby (free)
+# plan — nowhere near frequent enough to keep the site's short-lived data
+# caches warm. GitHub Actions' scheduled workflows have no such limit, so
+# this pings the site's warm-cache endpoint on a schedule instead, keeping
+# it pre-computed for whenever a real visitor actually shows up.
+#
+# GitHub coalesces/delays scheduled workflows under platform load, so "every
+# 5 minutes" is a best-effort target, not a guarantee — that's fine here,
+# the goal is "usually warm," not split-second freshness.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  warm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping warm-cache endpoint
+        run: curl -sf --max-time 60 "https://stock-web-blond.vercel.app/api/cron/warm-cache"

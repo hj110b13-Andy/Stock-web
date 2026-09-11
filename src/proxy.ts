@@ -24,5 +24,15 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!unlock|api/unlock|_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml).*)"],
+  // api/cron/* excluded too: Vercel's own cron trigger (and, for the new
+  // warm-cache route, an external GitHub Actions schedule) hits these with
+  // no browser session and never had the unlock cookie — this was silently
+  // breaking the existing daily-brief cron ever since this gate went in
+  // (confirmed: it was 307-redirecting to /unlock instead of running). Each
+  // cron route still checks its own CRON_SECRET when one is set, same as
+  // before this gate existed — being excluded here doesn't leave it
+  // unauthenticated, it just moves the check to where it already was.
+  matcher: [
+    "/((?!unlock|api/unlock|api/cron|_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml).*)",
+  ],
 };
