@@ -131,6 +131,37 @@ src/
 
 ## 工作日誌（新到舊，只列有意義的變更；commit hash 對應 `git log`）
 
+### 2026-09-11：規則二自測（第一次用真的 Playwright 打開正式站）發現並修正 2 個真實 bug
+本機第一次可以連到正式站+裝 Playwright，改用真瀏覽器地毯式檢查每個頁面/功能（見上方「這次的環境
+變化」）。過程中一些「找不到按鈕」的假警報後來證實是測試腳本選錯選擇器（登入按鈕文字其實是「使用
+Google 登入」、聊天輸入框是 `<input>` 不是 `<textarea>`、產業篩選是兩個各自獨立的 `<details>`
+面板要先展開對應面板才看得到 checkbox），不是網站真的壞掉，用修正後的選擇器重測都正常。也確認了
+登入按鈕在正式站不顯示是因為 Vercel 沒設定 `AUTH_GOOGLE_ID`/`AUTH_GOOGLE_SECRET`/`AUTH_SECRET`，
+這是刻意的優雅降級（Google 登入本來就是選用功能），不是 bug。
+
+真的抓到並修好的問題（commit `e95e963`）：
+1. **每個個股頁都會觸發 React hydration error #418（100% 重現，TW/US 皆然）**：
+   `LiveQuoteHeader.tsx` 用 `new Date(quote.updatedAt).toLocaleString("zh-TW", {timeZone:
+   "Asia/Taipei"})` 直接在渲染時格式化「更新時間」文字，但 Vercel 的 Node.js 執行環境跟瀏覽器對
+   `zh-TW` 語系的 ICU 資料不一致，同一個時間點兩邊格式化出來的字串不同，導致 SSR 輸出跟 CSR
+   首次渲染的文字對不上、每次都觸發 hydration 錯誤（雖然畫面上使用者看不太出來，但主控台一直報錯，
+   且屬於不穩定行為，理論上可能導致該文字閃爍或用到過期內容）。修法：在 `format.ts` 新增
+   `formatTaipeiDateTime()`，改用固定 UTC+8 位移的手動運算（不呼叫 `Intl`/`toLocaleString`），
+   在任何 JS 引擎、有沒有完整 ICU 資料都會得到一模一樣的字串。**教訓：SSR 頁面裡任何用
+   `toLocaleString`/`toLocaleDateString` 直接格式化「日期時間」（不是純數字）的地方都要小心，
+   Node 環境的語系資料不一定跟瀏覽器一致，數字格式化通常沒事，日期時間格式化風險高很多。**
+2. **一般聊天視窗（沒有從個股頁「問AI關於」進入、沒鎖定特定股票時）打中文公司名稱完全查不到資料**：
+   實測連續問「鴻海股價多少？」「聯發科呢？」「台達電呢？」，AI 每次都老實回答「並沒有包含該股資料」。
+   追到 `lib/ai/ask.ts` 的 `guessSymbolFromText()`：只用 regex 抓數字代號（如 2330）或大寫英文代碼
+   （如 AAPL），完全沒有比對中文公司名稱，使用者不打代號、直接打公司名稱這種最自然的問法就會失敗。
+   修法：在 `lib/data/universe.ts` 新增 `findSymbolByName()`，用公司名稱做子字串比對（比對股票清單
+   裡的中英文名稱，較長的名稱優先比對避免誤判），`guessSymbolFromText()` 改成先用名稱比對、比對不到
+   才退回原本的代號 regex。已確認：只有在沒有明確鎖定股票（`contextSymbol` 為 null）時才會呼叫
+   `guessSymbolFromText`，鎖定股票時走的是另一條路徑，這次修改不影響「問AI關於」的既有行為。
+
+**目前卡在 push 這一步**（見上方「目前已知問題」），push 成功、部署後還要重新用 Playwright 驗證
+這兩個問題真的修好、再走規則三 Opus 獨立驗證，才能回報「更新完成」。
+
 ### 2026-09-10：跨裝置文件化
 - 建立這份 `PROGRESS.md`，CLAUDE.md 新增規則五（跨裝置接續：每次回覆前更新這份文件並 push）。
 
@@ -176,6 +207,25 @@ src/
 
 ## 目前已知問題
 
-無。最近一輪 Opus 複查（針對上面「深色模式漏改」的補丁）回報「沒有發現問題」。
+- 規則二自測發現並已修正 2 個真實 bug（見下方工作日誌 2026-09-11），已 commit + push（`e95e963`），
+  Vercel 已重新部署，且已用 Playwright 直接對正式站重新驗證這兩個問題確實修好。
+  規則二完成，**規則三（Opus 獨立驗證）尚未跑完前不能跟使用者說「更新完成」**。
+
+## 這次的環境變化（給下一個接手的裝置參考）
+
+這是第一次在**這台本機 Windows PC**上執行這個專案的品保流程，跟先前 PROGRESS.md 記錄的「sandbox
+連不到正式站、沒有 Playwright」不同——**這台機器對外網路正常、能連到正式站**，且已經：
+- 用 `winget install OpenJS.NodeJS.LTS` 裝好 Node.js（LTS，含 npm）。
+- 在系統暫存資料夾（非專案內）裝了 `playwright` npm 套件 + Chromium，可以真的用瀏覽器打開正式站
+  點擊操作，不用再退而求其次只用 curl。
+- 專案本身 `npm install && npm run build` 在本機也能正常跑，可以先在本機建置驗證再 push。
+- **git push 第一次卡在 Git Credential Manager「Select an account」視窗**：這台機器的 Windows
+  認證管理員裡存了兩個 GitHub 帳號（`andyzheng-art` 跟這個 repo 真正的擁有者 `hj110b13-Andy`），
+  GCM 沒辦法自動判斷要用哪個，所以每次都跳出來問。已經把 `origin` remote URL 改成
+  `https://hj110b13-Andy@github.com/hj110b13-Andy/Stock-web.git`（明確指定帳號），之後在這台機器
+  上 push/fetch 都不會再跳出選擇視窗。**如果又跳出來（例如帳號密碼過期），跟使用者說一聲請他選一次
+  就好，不是程式碼問題。**
+如果下一個接手的裝置也是這台本機，以上工具跟 remote 設定應該都還在，不用重新安裝/設定；如果是
+別的環境，仍比照舊有說明評估該環境的網路/工具限制。
 
 如果你接手後又發現了新問題，**除了修正之外，記得也在這份文件的「工作日誌」補一筆，並更新這個章節。**
