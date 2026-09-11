@@ -1,4 +1,5 @@
 import type { DailyBrief } from "@/lib/ai/brief";
+import MarkdownLite from "./MarkdownLite";
 
 export default function DailyBriefCard({ brief }: { brief: DailyBrief }) {
   return (
@@ -9,7 +10,9 @@ export default function DailyBriefCard({ brief }: { brief: DailyBrief }) {
           <span className="rounded-full bg-(--page-plane) px-2 py-0.5 text-[11px] text-(--text-muted)">資料整理</span>
         )}
       </div>
-      <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-(--text-secondary)">{brief.text}</p>
+      <div className="mt-2 space-y-1 text-sm leading-relaxed text-(--text-secondary)">
+        <MarkdownLite text={brief.text} />
+      </div>
       <p className="mt-3 text-[11px] text-(--text-muted)">
         {brief.usedAi ? "由 AI 依當前市場資料自動生成，" : ""}
         僅為資訊整理與客觀描述，不構成投資建議 · 更新於{" "}
