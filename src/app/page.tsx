@@ -7,17 +7,15 @@ import LiveIndices from "@/components/LiveIndices";
 import MarketStatusBadge from "@/components/MarketStatusBadge";
 import { getIndices, searchStocks } from "@/lib/data";
 import type { Market, SearchItem } from "@/lib/data";
-import { getDailyBrief } from "@/lib/ai/brief";
 import { getMarketStatus } from "@/lib/marketStatus";
 
 export const revalidate = 0;
 
 export default async function HomePage() {
-  const [indices, twMovers, usMovers, brief] = await Promise.all([
+  const [indices, twMovers, usMovers] = await Promise.all([
     getIndices(),
     searchStocks({ market: "TW", sortBy: "changePercent", sortDir: "desc" }),
     searchStocks({ market: "US", sortBy: "changePercent", sortDir: "desc" }),
-    getDailyBrief(),
   ]);
 
   const twIndices = indices.filter((i) => i.market === "TW");
@@ -60,7 +58,7 @@ export default async function HomePage() {
         </div>
       </section>
 
-      <DailyBriefCard brief={brief} />
+      <DailyBriefCard />
 
       <WatchlistSection />
 

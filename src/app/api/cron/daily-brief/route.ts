@@ -6,12 +6,11 @@ import { getDailyBrief } from "@/lib/ai/brief";
 // AI call. Optionally protected by CRON_SECRET, which Vercel sends as
 // `Authorization: Bearer <secret>` when set — see
 // https://vercel.com/docs/cron-jobs/manage-cron-jobs#securing-cron-jobs.
-//
-// Caveat: caching is an in-memory Map per lib/data/cache.ts, which is
-// per-serverless-instance, not a shared store — this warms whichever
-// instance handles the cron request, which helps but doesn't guarantee
-// every subsequent visitor's instance already has it cached. A real
-// production deployment should back this with Redis/KV instead.
+// Shares the Redis-backed cache (see lib/data/cache.ts) with the client-side
+// fetch in DailyBriefCard/api/daily-brief, so a successful cron run here is
+// visible to every serverless instance, not just whichever one handled it.
+export const maxDuration = 60; // room for the up-to-25s Gemini call in brief.ts
+
 export async function GET(req: NextRequest) {
   const secret = process.env.CRON_SECRET;
   if (secret) {

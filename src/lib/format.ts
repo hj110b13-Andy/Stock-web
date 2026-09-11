@@ -65,3 +65,16 @@ export function priceDirectionClass(change: number): string {
   if (change < 0) return "text-(--price-down)";
   return "text-(--text-secondary)";
 }
+
+/**
+ * TWSE's 三大法人買賣超 data comes in raw shares, but Taiwanese investors
+ * discuss it in 張 (1張=1000股). Every caller that feeds this to an LLM
+ * needs BOTH numbers spelled out — a past bug had the model try to do this
+ * conversion itself in generated text and get it wrong by 10x/1000x. Shared
+ * here so that fix lives in exactly one place instead of being copy-pasted
+ * (and potentially re-broken) across every feature that mentions chip data.
+ */
+export function formatSharesWithLots(shares: number): string {
+  const signed = (n: number) => `${n >= 0 ? "+" : ""}${n.toLocaleString()}`;
+  return `${signed(shares)}股（約${signed(Math.round(shares / 1000))}張）`;
+}

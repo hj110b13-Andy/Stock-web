@@ -52,16 +52,25 @@ async function listCandidateModels(apiKey: string): Promise<string[]> {
   return [...flash, ...rest].slice(0, MAX_CANDIDATES);
 }
 
-async function callGemini(model: string, system: string, messages: ChatTurn[], apiKey: string): Promise<string> {
+export interface GeminiCallOptions {
+  /** Widened from an original 8s once chips/announcements/fundamentals/
+   *  dual-locale news made the grounding prompt noticeably bigger — a
+   *  longer input increases generation time, so 8s started occasionally
+   *  aborting valid, in-progress responses rather than a real stall. */
+  timeoutMs?: number;
+  maxOutputTokens?: number;
+}
+
+async function callGemini(
+  model: string,
+  system: string,
+  messages: ChatTurn[],
+  apiKey: string,
+  options: GeminiCallOptions
+): Promise<string> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
-  // Widened from 8s: the grounding prompt got noticeably bigger once
-  // chips/announcements/fundamentals/dual-locale news were added (see
-  // buildStockGrounding in lib/ai/ask.ts), and a longer input increases
-  // Gemini's generation time — 8s was already tight before that and started
-  // occasionally aborting valid, in-progress responses under the larger
-  // prompt rather than a real stall.
-  const res = await fetchWithTimeout(url, 12000, {
+  const res = await fetchWithTimeout(url, options.timeoutMs ?? 12000, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -71,7 +80,7 @@ async function callGemini(model: string, system: string, messages: ChatTurn[], a
         role: m.role === "assistant" ? "model" : "user",
         parts: [{ text: m.content }],
       })),
-      generationConfig: { maxOutputTokens: 1000, temperature: 0.4 },
+      generationConfig: { maxOutputTokens: options.maxOutputTokens ?? 1000, temperature: 0.4 },
     }),
   });
 
@@ -83,13 +92,18 @@ async function callGemini(model: string, system: string, messages: ChatTurn[], a
   return text.trim();
 }
 
-export async function askGemini(system: string, messages: ChatTurn[], apiKey: string): Promise<string> {
+export async function askGemini(
+  system: string,
+  messages: ChatTurn[],
+  apiKey: string,
+  options: GeminiCallOptions = {}
+): Promise<string> {
   const keyId = apiKey.slice(-8);
   const known = knownGoodModel.get(keyId);
 
   if (known) {
     try {
-      return await callGemini(known, system, messages, apiKey);
+      return await callGemini(known, system, messages, apiKey, options);
     } catch {
       knownGoodModel.delete(keyId); // it stopped working; re-probe below
     }
@@ -100,7 +114,7 @@ export async function askGemini(system: string, messages: ChatTurn[], apiKey: st
   for (const model of candidates) {
     if (model === known) continue; // already just failed above
     try {
-      const text = await callGemini(model, system, messages, apiKey);
+      const text = await callGemini(model, system, messages, apiKey, options);
       knownGoodModel.set(keyId, model);
       return text;
     } catch (err) {

@@ -11,6 +11,15 @@ export interface ProviderResult {
   failureReason?: string;
 }
 
+export interface CallAiProvidersOptions {
+  /** Gemini request timeout in ms (default 12000). */
+  timeoutMs?: number;
+  /** Output token cap for both providers (default 1000). The daily brief
+   *  passes a higher value since it now generates a longer, four-section
+   *  write-up than a typical chat answer. */
+  maxOutputTokens?: number;
+}
+
 const MAX_HISTORY_TURNS = 10;
 
 /**
@@ -21,7 +30,11 @@ const MAX_HISTORY_TURNS = 10;
  * pass a single-element array for a one-shot (non-chat) generation like
  * the daily brief.
  */
-export async function callAiProviders(system: string, messages: ChatTurn[]): Promise<ProviderResult> {
+export async function callAiProviders(
+  system: string,
+  messages: ChatTurn[],
+  options: CallAiProvidersOptions = {}
+): Promise<ProviderResult> {
   const geminiKey = process.env.GEMINI_API_KEY;
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
 
@@ -65,7 +78,10 @@ export async function callAiProviders(system: string, messages: ChatTurn[]): Pro
 
   if (geminiKey) {
     try {
-      const answer = await askGemini(system, turns, geminiKey);
+      const answer = await askGemini(system, turns, geminiKey, {
+        timeoutMs: options.timeoutMs,
+        maxOutputTokens: options.maxOutputTokens,
+      });
       return { answer, usedAi: true };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -79,7 +95,7 @@ export async function callAiProviders(system: string, messages: ChatTurn[]): Pro
       const client = new Anthropic({ apiKey: anthropicKey });
       const message = await client.messages.create({
         model: "claude-sonnet-5",
-        max_tokens: 1000,
+        max_tokens: options.maxOutputTokens ?? 1000,
         system,
         messages: turns.map((t) => ({ role: t.role, content: t.content })),
       });

@@ -90,14 +90,33 @@ export async function fetchNews(query: string, limit = 6, locale: NewsLocale = "
  * one edition's view of "what's in the news."
  */
 export async function fetchNewsMulti(query: string, perLocaleLimit: number, locales: NewsLocale[]): Promise<NewsItem[]> {
-  const lists = await Promise.all(locales.map((locale) => fetchNews(query, perLocaleLimit, locale)));
+  return dedupeNews(await Promise.all(locales.map((locale) => fetchNews(query, perLocaleLimit, locale))).then((l) => l.flat()));
+}
+
+function dedupeNews(items: NewsItem[]): NewsItem[] {
   const seen = new Set<string>();
   const merged: NewsItem[] = [];
-  for (const item of lists.flat()) {
+  for (const item of items) {
     const key = item.title.trim().toLowerCase();
     if (!key || seen.has(key)) continue;
     seen.add(key);
     merged.push(item);
   }
   return merged;
+}
+
+/**
+ * US market-wide news needs its own English-language query ("US stock
+ * market") for the en-US Google News edition — reusing the Chinese "美股"
+ * query there returns poorly-matched results, since it's searching an
+ * English-language edition with a Chinese term. Shared by the chat's market
+ * news section and the daily brief, so this query-pairing logic lives in
+ * exactly one place.
+ */
+export async function fetchUsMarketNews(perLocaleLimit = 5): Promise<NewsItem[]> {
+  const [zh, en] = await Promise.all([
+    fetchNews("美股", perLocaleLimit).catch(() => []),
+    fetchNews("US stock market", perLocaleLimit, "en-US").catch(() => []),
+  ]);
+  return dedupeNews([...zh, ...en]);
 }

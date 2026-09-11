@@ -11,8 +11,8 @@ import {
   searchStocks,
 } from "@/lib/data";
 import type { Market } from "@/lib/data";
-import { fetchNews, fetchNewsMulti, type NewsItem } from "@/lib/data/news";
-import { formatMarketCap } from "@/lib/format";
+import { fetchNews, fetchNewsMulti, fetchUsMarketNews } from "@/lib/data/news";
+import { formatMarketCap, formatSharesWithLots } from "@/lib/format";
 import { callAiProviders } from "@/lib/ai/provider";
 import type { ChatTurn } from "@/lib/ai/types";
 
@@ -112,22 +112,16 @@ async function buildStockGrounding(
   // TW only — chips/announcements are null/empty for US, see getChips/getMaterialAnnouncements.
   if (chips) {
     const signed = (n: number) => `${n >= 0 ? "+" : ""}${n.toLocaleString()}`;
-    // 三大法人資料是股數，但台灣投資人慣用「張」(1張=1000股) 討論這類數字——
-    // 一開始只給股數，結果 AI 常自己心算換成張，出現 1000 倍/10 倍的換算錯誤
-    // 甚至前後矛盾（Opus 規則三驗證抓到，例如把 -8,832,445 股講成「賣超 338
-    // 萬張」）。改成直接把換算好的張數一起附上，並在系統提示詞要求直接引用
-    // 這個數字、不要自己再換算一次，消除這個出錯來源。
-    const shareWithLots = (n: number) => `${signed(n)}股（約${signed(Math.round(n / 1000))}張）`;
     const parts: string[] = [];
     if (chips.institutionalNetShares != null) {
       const detail = [
-        chips.foreignNetShares != null ? `外資${shareWithLots(chips.foreignNetShares)}` : "",
-        chips.trustNetShares != null ? `投信${shareWithLots(chips.trustNetShares)}` : "",
-        chips.dealerNetShares != null ? `自營商${shareWithLots(chips.dealerNetShares)}` : "",
+        chips.foreignNetShares != null ? `外資${formatSharesWithLots(chips.foreignNetShares)}` : "",
+        chips.trustNetShares != null ? `投信${formatSharesWithLots(chips.trustNetShares)}` : "",
+        chips.dealerNetShares != null ? `自營商${formatSharesWithLots(chips.dealerNetShares)}` : "",
       ]
         .filter(Boolean)
         .join("、");
-      parts.push(`三大法人合計${shareWithLots(chips.institutionalNetShares)}（${detail}）`);
+      parts.push(`三大法人合計${formatSharesWithLots(chips.institutionalNetShares)}（${detail}）`);
     }
     if (chips.marginBalance != null) {
       const change = chips.marginBalanceChange != null ? `，較前日${signed(chips.marginBalanceChange)}張` : "";
@@ -152,37 +146,24 @@ async function buildStockGrounding(
   return { symbol: quote.symbol, text: lines.join("\n") };
 }
 
-/**
- * US market news needs its own English-language query ("US stock market")
- * for the en-US Google News edition — reusing the Chinese "美股" query there
- * would return poorly-matched results, since it's searching an English-
- * language edition with a Chinese term. fetchNewsMulti can't be used here
- * because it applies one query across every locale; this fetches each
- * locale with its own matching query and merges/de-dupes by title itself.
- */
-async function buildUsMarketNews(): Promise<NewsItem[]> {
-  const [zh, en] = await Promise.all([
-    fetchNews("美股", 5).catch(() => []),
-    fetchNews("US stock market", 5, "en-US").catch(() => []),
-  ]);
-  const seen = new Set<string>();
-  const merged: NewsItem[] = [];
-  for (const item of [...zh, ...en]) {
-    const key = item.title.trim().toLowerCase();
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    merged.push(item);
-  }
-  return merged;
-}
-
 // Matches "有哪些股票不錯"/"什麼股票要漲了"/"推薦一下"/"今天有什麼強勢股" style
 // questions that aren't about any one stock — asking for a list, not a lookup.
 // Without this, guessSymbolFromText finds nothing, no grounding is attached,
 // and the model (correctly, per its instructions not to invent numbers) just
 // says it has no data — even though the site already computes exactly this
 // kind of thing (焦點排行/技術訊號共振) for the /highlights page.
-const MOVERS_INTENT_PATTERN = /有哪些|哪幾檔|哪支|哪些股票|推薦|不錯的股票|強勢股|熱門股|飆股|焦點股|上漲的股票|要漲|要噴|準備上漲/;
+//
+// A real conversation caught this pattern missing common multi-turn follow-
+// up phrasings — "還有別的比較有機率漲幅較大的嗎？" matched none of the
+// original phrases (no "有哪些"/"推薦"/"強勢股" etc.), so buildMoversGrounding
+// never ran and the model, with no fresh screened candidates to work from,
+// fell back to generic textbook answers ("留意 AI 伺服器供應鏈如鴻海、廣達")
+// instead of naming anything from the site's own data. Broadened to also
+// catch "還有別的/其他"-style follow-ups and generic buy-idea phrasing —
+// safe to widen, since this only fires when guessSymbolFromText found no
+// specific stock in the question at all (see wantsMovers below).
+const MOVERS_INTENT_PATTERN =
+  /有哪些|哪幾檔|哪支|哪些股票|推薦|不錯的股票|強勢股|熱門股|飆股|焦點股|上漲的股票|要漲|要噴|準備上漲|還有.{0,3}(別的|其他)|有沒有.{0,3}(別的|其他)|有機會|機率.{0,6}(大|高)|買(什麼|甚麼)|選股|有推薦/;
 
 // Momentum stocks get more slots than plain gainers: a gainer is just one
 // number (today's %), but each momentum entry carries several independent,
@@ -201,18 +182,31 @@ async function buildMoversGrounding(): Promise<string> {
       getMultiSignalStocks("TW"),
       getMultiSignalStocks("US"),
     ]);
+    // TW momentum candidates also get their institutional flow attached —
+    // without this, a "what else looks good" question could only be
+    // answered with price/technical data, which reads as generic. Chip
+    // data gives the model something concrete and stock-specific to cite
+    // (e.g. "外資今天同步買超") beyond textbook sector commentary. US has
+    // no equivalent public data source, so US entries are technical-only.
+    const twMomentumSlice = twMomentum.slice(0, MOMENTUM_N);
+    const twChips = await Promise.all(
+      twMomentumSlice.map((s) => getChips(s.symbol, "TW").catch(() => null))
+    );
     const fmtGainer = (items: typeof twGainers) =>
       items.slice(0, GAINERS_N).map((s) => `${s.name}(${s.symbol}) ${s.changePercent >= 0 ? "+" : ""}${s.changePercent}%`).join("、") || "（無資料）";
-    const fmtMomentum = (items: typeof twMomentum) =>
+    const fmtMomentum = (items: typeof twMomentum, chips?: (typeof twChips)[number][]) =>
       items
-        .slice(0, MOMENTUM_N)
-        .map((s) => `${s.name}(${s.symbol})，現價${s.price}(${s.changePercent >= 0 ? "+" : ""}${s.changePercent}%)：${s.signals.map((sig) => sig.label).join("、")}`)
+        .map((s, i) => {
+          const chip = chips?.[i];
+          const chipText = chip?.institutionalNetShares != null ? `；三大法人${formatSharesWithLots(chip.institutionalNetShares)}` : "";
+          return `${s.name}(${s.symbol})，現價${s.price}(${s.changePercent >= 0 ? "+" : ""}${s.changePercent}%)：${s.signals.map((sig) => sig.label).join("、")}${chipText}`;
+        })
         .join("\n") || "（無資料）";
     return [
       `台股今日漲幅榜前${GAINERS_N}：${fmtGainer(twGainers)}`,
       `美股今日漲幅榜前${GAINERS_N}：${fmtGainer(usGainers)}`,
-      `台股技術訊號共振股（同時符合≥2個客觀技術訊號，依訊號數量排序，共${twMomentum.length}檔，列出前${MOMENTUM_N}）：\n${fmtMomentum(twMomentum)}`,
-      `美股技術訊號共振股（共${usMomentum.length}檔，列出前${MOMENTUM_N}）：\n${fmtMomentum(usMomentum)}`,
+      `台股技術訊號共振股（同時符合≥2個客觀技術訊號，依訊號數量排序，共${twMomentum.length}檔，列出前${MOMENTUM_N}，含三大法人買賣超；股數已換算好對應張數，直接引用不要自己重算）：\n${fmtMomentum(twMomentumSlice, twChips)}`,
+      `美股技術訊號共振股（共${usMomentum.length}檔，列出前${MOMENTUM_N}）：\n${fmtMomentum(usMomentum.slice(0, MOMENTUM_N))}`,
     ].join("\n\n");
   } catch {
     return "";
@@ -291,7 +285,7 @@ export async function answerQuestion(
       .catch(() => ""),
     wantsMovers ? buildMoversGrounding() : Promise.resolve(""),
     buildHoldingsGrounding(holdings).catch(() => ""),
-    Promise.all([fetchNews("台股", 6), buildUsMarketNews()]).catch(() => [[], []] as const),
+    Promise.all([fetchNews("台股", 6), fetchUsMarketNews(5)]).catch(() => [[], []] as const),
   ]);
 
   if (stockGrounding) groundedSymbol = stockGrounding.symbol;
@@ -326,6 +320,7 @@ export async function answerQuestion(
     "這個網站現在只有你（開發者）跟家人知道密碼才能進來，不是對外公開的服務，使用者問『有哪些股票不錯/推薦一下/幫我選股/這支該不該買』這類問題時，直接根據拿到的資料給明確的個人看法即可，包括『我覺得這幾檔現在值得留意』『這支技術面偏弱，我會先觀望』這種直接的話，不用迴避、不用只丟數據不表態、也不用每次都加但書。看法要根據資料裡實際的數字說理由（例如均量倍數、連漲天數、均線位置、本益比、股價淨值比、法人買賣超、融資變化、漲跌幅），不要憑空瞎猜；資料不夠支撐判斷時就老實說資料不足，不要硬掰。",
     "請根據資料回答，不要編造資料中沒有的數字；若資料標示為無法取得，直接說目前查不到，不要繞圈子解釋為什麼查不到。",
     "使用者之前的提問與你的回覆會一併附上作為對話紀錄，回答新問題時請自然承接對話脈絡（例如使用者接著問「那美股呢」時，要記得他上一句在問什麼）。",
+    "使用者問『還有其他/還有別的/有沒有機會』這類接續問題時，優先從「今日焦點數據」的技術訊號共振股/漲幅榜裡挑對話中還沒提過的標的，並具體引用該檔的數據（訊號、法人買賣超、漲跌幅），不要因為想不到新標的就退回『AI伺服器供應鏈』『半導體設備股』『防禦性類股』這種沒有點名具體股票、任何人不用看盤都講得出來的空泛說法；如果資料裡真的已經沒有還沒提過的標的，就老實說『目前資料裡比較突出的大概就這幾檔』，不要硬掰新的類股概念湊答案。",
   ].join("\n");
 
   const userContent = grounding
