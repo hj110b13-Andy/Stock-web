@@ -293,16 +293,30 @@ export interface MomentumItem extends SearchItem {
   signals: Signal[];
 }
 
-const MOMENTUM_TTL_MS = 5 * 60_000;
+// Doubled from 5 minutes: the per-candidate chart fetch below is bound by
+// round-trip latency to TWSE/Yahoo from Vercel's servers, which stays a
+// multi-second cost no matter how much concurrency or candidate-trimming is
+// applied on top of it (see the two constants below — trimming candidates
+// 25→15 only shaved ~18% off a local benchmark, confirming the wait is
+// mostly network RTT, not local compute). A longer cache window doesn't
+// make any single computation faster, but it does mean far fewer visits
+// actually pay that cost — for a low-traffic personal site, technical
+// signals being up to 10 minutes stale is an easy trade for that.
+const MOMENTUM_TTL_MS = 10 * 60_000;
 // Computing a signal requires a chart fetch per candidate stock, so the
 // candidate pool is capped to the biggest movers by |change%| before doing
 // that work — a board that only ever displays the top ~10 results doesn't
-// need to chart-fetch the entire universe, and keeping this small bounds
-// how many concurrent requests hit TWSE/Yahoo for this one screen.
-const MOMENTUM_CANDIDATE_LIMIT = 25;
+// need to chart-fetch the entire universe. Trimmed from 25: confirmed via
+// local benchmark that this pool size barely moves the needle on a cold
+// computation (see MOMENTUM_TTL_MS comment above) since TWSE round-trip
+// latency dominates either way, so there was no reason to charter the
+// larger pool.
+const MOMENTUM_CANDIDATE_LIMIT = 15;
 // How many candidates are charted at once. A TW chart fetch is itself
 // several requests (one per calendar month), so this is the real knob on
-// how hard this screen hits the upstreams.
+// how hard this screen hits the upstreams. Kept above MOMENTUM_CANDIDATE_LIMIT
+// so every candidate still runs in one fully-parallel batch (mapWithConcurrency
+// clamps to the smaller of the two anyway).
 const MOMENTUM_CHART_CONCURRENCY = 25;
 
 /**
