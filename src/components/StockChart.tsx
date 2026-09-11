@@ -119,7 +119,13 @@ export default function StockChart({
     });
 
     const volume = chart.addSeries(HistogramSeries, {
-      priceFormat: { type: "volume" },
+      // lightweight-charts' built-in "volume" formatter always abbreviates
+      // with K/M/B (US convention) — on a TW chart that showed the axis
+      // label as e.g. "21.13M" while every other volume figure on the same
+      // page (header, tooltip) correctly reads in 張 via formatVolume(),
+      // a mismatch an Opus QA pass flagged. A custom formatter routes this
+      // one through the same shared formatVolume() so all three agree.
+      priceFormat: { type: "custom", formatter: (price: number) => formatVolume(price, market), minMove: 1 },
       priceScaleId: "volume",
       color: palette.textMuted,
     });

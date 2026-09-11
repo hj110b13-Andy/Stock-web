@@ -224,6 +224,28 @@ export async function mapWithConcurrency<T, R>(
   return results;
 }
 
+/**
+ * Several callers (Gemini, in particular) put an API key directly in the
+ * query string (`?key=...`). On a non-2xx response the error below used to
+ * embed the *full* URL verbatim — and that error's message eventually
+ * reaches the client as-is (via provider.ts's failure log -> ask.ts's
+ * canned fallback answer) whenever every AI provider fails, which put a
+ * live, working API key in a chat bubble in the browser the first time
+ * Gemini returned a 429. Redacting known secret-bearing params here fixes
+ * every current and future caller at once, not just Gemini's call sites.
+ */
+function redactSecretParams(url: string): string {
+  try {
+    const parsed = new URL(url);
+    for (const param of ["key", "apikey", "api_key", "token", "secret"]) {
+      if (parsed.searchParams.has(param)) parsed.searchParams.set(param, "***");
+    }
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
 export async function fetchWithTimeout(url: string, timeoutMs = 4000, init?: RequestInit): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -231,7 +253,7 @@ export async function fetchWithTimeout(url: string, timeoutMs = 4000, init?: Req
     const res = await fetch(url, { ...init, signal: controller.signal, cache: "no-store" });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      throw new Error(`HTTP ${res.status} for ${url}${body ? `: ${body.slice(0, 500)}` : ""}`);
+      throw new Error(`HTTP ${res.status} for ${redactSecretParams(url)}${body ? `: ${body.slice(0, 500)}` : ""}`);
     }
     return res;
   } finally {

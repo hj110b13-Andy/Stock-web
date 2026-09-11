@@ -112,16 +112,22 @@ async function buildStockGrounding(
   // TW only — chips/announcements are null/empty for US, see getChips/getMaterialAnnouncements.
   if (chips) {
     const signed = (n: number) => `${n >= 0 ? "+" : ""}${n.toLocaleString()}`;
+    // 三大法人資料是股數，但台灣投資人慣用「張」(1張=1000股) 討論這類數字——
+    // 一開始只給股數，結果 AI 常自己心算換成張，出現 1000 倍/10 倍的換算錯誤
+    // 甚至前後矛盾（Opus 規則三驗證抓到，例如把 -8,832,445 股講成「賣超 338
+    // 萬張」）。改成直接把換算好的張數一起附上，並在系統提示詞要求直接引用
+    // 這個數字、不要自己再換算一次，消除這個出錯來源。
+    const shareWithLots = (n: number) => `${signed(n)}股（約${signed(Math.round(n / 1000))}張）`;
     const parts: string[] = [];
     if (chips.institutionalNetShares != null) {
       const detail = [
-        chips.foreignNetShares != null ? `外資${signed(chips.foreignNetShares)}股` : "",
-        chips.trustNetShares != null ? `投信${signed(chips.trustNetShares)}股` : "",
-        chips.dealerNetShares != null ? `自營商${signed(chips.dealerNetShares)}股` : "",
+        chips.foreignNetShares != null ? `外資${shareWithLots(chips.foreignNetShares)}` : "",
+        chips.trustNetShares != null ? `投信${shareWithLots(chips.trustNetShares)}` : "",
+        chips.dealerNetShares != null ? `自營商${shareWithLots(chips.dealerNetShares)}` : "",
       ]
         .filter(Boolean)
         .join("、");
-      parts.push(`三大法人合計${signed(chips.institutionalNetShares)}股（${detail}）`);
+      parts.push(`三大法人合計${shareWithLots(chips.institutionalNetShares)}（${detail}）`);
     }
     if (chips.marginBalance != null) {
       const change = chips.marginBalanceChange != null ? `，較前日${signed(chips.marginBalanceChange)}張` : "";
@@ -313,6 +319,7 @@ export async function answerQuestion(
     "風格要求（很重要）：直接講重點、先講結論，語氣像在跟人對話而不是寫報告。不要模稜兩可、不要鋪陳、不要重複同樣的免責聲明兩次以上。能一兩句話講完的就不要條列；只有在真的有好幾個平行項目時才用條列，且每項一行、不要展開解釋。",
     "你會拿到「個股資料」（使用者問特定股票時，內含報價/K線，資料充足時還會有：「基本面」本益比/股價淨值比/殖利率/市值、「財報」月營收年增率與季度EPS、「籌碼面」三大法人買賣超與融資融券餘額增減（僅台股，美股沒有這塊資料）、「近期重大訊息公告」（僅台股）、「近期相關新聞」）、「大盤概況」（台股加權指數、道瓊、S&P 500、那斯達克）、「近期市場新聞」（台股/美股各幾則近期真實新聞標題，美股這塊同時混合中英文來源），有時候還有「今日焦點數據」（今日漲幅榜、技術訊號共振股）、「我的關注清單/持股」（使用者關注清單裡每一檔的即時報價，有設定成本/股數的還會有損益）。",
     "使用者問『資訊面/消息面/新聞/為什麼漲跌/財報/籌碼/法人在買還是在賣/融資融券』這類問題時：直接引用「近期市場新聞」或個股資料裡對應的區塊講重點（標題、大概方向、來源、實際數字即可，不用逐字複述），這些都是真實抓到的資料，不要再回答『沒有新聞管道』『系統僅提供報價數據』這種話——現在有了。某個區塊資料不夠或抓不到時才老實說目前查不到，不要就此完全略過不提；台股籌碼面/重大訊息若某檔當天剛好沒有法人動作或沒有公告，這是正常現象，直接說『今天沒有明顯的法人動向/沒有重大訊息』即可，不是資料抓取失敗。",
+    "籌碼面的三大法人數字資料裡已經同時附上「股」跟換算好的「約XX張」兩種寫法，直接照抄其中一種講就好，絕對不要自己把股數重新換算成張（1張=1000股這個換算你自己心算很容易出錯，之前就出現過1000倍、10倍算錯、甚至同一句話裡數字前後矛盾的情況），也不要把股數誤講成張數的量級。",
     "給看法或建議時，要綜合基本面（估值高不高）、財報（營收獲利趨勢）、籌碼面（法人是在買超還是賣超、融資是不是異常暴增暴減）、消息面（近期新聞/重大訊息有沒有利多利空）、技術面（均線/RSI/MACD/量價）這幾個面向一起判斷，不要只看單一面向就下結論；面向之間互相矛盾時（例如技術面強但法人在賣、或基本面便宜但籌碼面偏空）要老實點出這個矛盾，不要選擇性忽略對你的結論不利的那一面。",
     "拿到「我的關注清單/持股」時（通常是使用者按了『分析我的關注清單』或問『幫我看看我關注的股票』），逐檔講重點：現價/今日漲跌、有損益資料的講清楚賺賠多少錢跟百分比、你對這檔現況的看法；沒設定成本的那幾檔就只講現況看法，不用特別提醒『你沒填成本』這種瑣事。多檔的話用條列，每檔一行講完，不要每檔都展開成一大段。",
     "台股與美股常互相影響（例如美股科技股/半導體夜間走勢，隔天常牽動台股電子權值股），有明顯關聯時才連結兩邊資料分析，沒有的話不用勉強牽拖。",
