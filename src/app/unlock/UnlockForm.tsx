@@ -1,10 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 
 export default function UnlockForm() {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -26,8 +25,15 @@ export default function UnlockForm() {
         setError(data.error ?? "密碼錯誤");
         return;
       }
-      router.push(searchParams.get("next") || "/");
-      router.refresh();
+      // A full navigation, not router.push(): Next.js's client-side router
+      // cache had already prefetched "/" (via the header nav's <Link>s)
+      // while still unauthenticated, and router.push() was serving that
+      // stale pre-login result straight back to /unlock even though the
+      // cookie was already set correctly — the browser network tab showed
+      // the /api/unlock POST succeed and the cookie land, but the URL bar
+      // never moved. window.location bypasses that cache entirely with a
+      // real request, which is what a one-time unlock gate should do anyway.
+      window.location.href = searchParams.get("next") || "/";
     } catch {
       setError("網路錯誤，請稍後再試");
     } finally {
