@@ -1,10 +1,9 @@
-import { Suspense } from "react";
 import type { Metadata } from "next";
 import StockTable from "@/components/StockTable";
 import MarketTabs from "@/components/MarketTabs";
-import MomentumTable from "@/components/MomentumTable";
+import MomentumSection from "@/components/MomentumSection";
 import MarketStatusBadge from "@/components/MarketStatusBadge";
-import { searchStocks, getMultiSignalStocks } from "@/lib/data";
+import { searchStocks } from "@/lib/data";
 import { getMarketStatus } from "@/lib/marketStatus";
 
 export const revalidate = 0;
@@ -65,50 +64,8 @@ export default async function HighlightsPage() {
         usItems={usVolume.slice(0, 10)}
       />
 
-      <Suspense fallback={<MomentumSkeleton />}>
-        <MomentumSection />
-      </Suspense>
+      <MomentumSection />
     </div>
-  );
-}
-
-/**
- * Split into its own streamed Suspense boundary: this is the slow part of
- * the page (a chart fetch per candidate stock, see MOMENTUM_CHART_CONCURRENCY
- * in lib/data/index.ts) and used to hold up the *entire* page — the fast
- * boards above (a single batched quote fetch each) sat on a blank screen for
- * several extra seconds waiting on this one section. Streaming it in lets
- * everything else appear as soon as it's actually ready.
- */
-async function MomentumSection() {
-  const [twMomentum, usMomentum] = await Promise.all([getMultiSignalStocks("TW"), getMultiSignalStocks("US")]);
-  return (
-    <section className="rounded-lg border border-(--gridline) bg-(--surface-1) p-4">
-      <h2 className="font-semibold">技術訊號共振股</h2>
-      <p className="mb-3 text-xs text-(--text-muted)">
-        同時符合兩個以上客觀技術訊號（如爆量、站上均線、連續上漲）的股票。純粹描述當下數據呈現的狀態，不是對未來走勢的預測，不構成投資建議。
-      </p>
-      <MarketTabs
-        tw={<MomentumTable items={twMomentum.slice(0, 10)} />}
-        us={<MomentumTable items={usMomentum.slice(0, 10)} />}
-      />
-    </section>
-  );
-}
-
-function MomentumSkeleton() {
-  return (
-    <section className="rounded-lg border border-(--gridline) bg-(--surface-1) p-4">
-      <h2 className="font-semibold">技術訊號共振股</h2>
-      <p className="mb-3 text-xs text-(--text-muted)">
-        同時符合兩個以上客觀技術訊號（如爆量、站上均線、連續上漲）的股票。純粹描述當下數據呈現的狀態，不是對未來走勢的預測，不構成投資建議。
-      </p>
-      <div className="space-y-2">
-        {Array.from({ length: 5 }).map((_, i) => (
-          <div key={i} className="h-9 animate-pulse rounded bg-(--page-plane)" />
-        ))}
-      </div>
-    </section>
   );
 }
 

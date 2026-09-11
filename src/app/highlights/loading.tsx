@@ -13,7 +13,7 @@ export default function Loading() {
           台股、美股分開排名，快速掃到市場現在在關注什麼。純粹依數據排序，不代表買賣建議。
         </p>
       </div>
-      {Array.from({ length: 4 }).map((_, i) => (
+      {Array.from({ length: 3 }).map((_, i) => (
         <section key={i} className="rounded-lg border border-(--gridline) bg-(--surface-1) p-4">
           <div className="mb-3 h-5 w-24 animate-pulse rounded bg-(--page-plane)" />
           <div className="space-y-2">
