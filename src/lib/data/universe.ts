@@ -99,6 +99,15 @@ export const US_UNIVERSE: UniverseEntry[] = [
   { symbol: "UBER", market: "US", name: "Uber Technologies", sector: "Technology", currency: "USD" },
   { symbol: "ABNB", market: "US", name: "Airbnb Inc.", sector: "Technology", currency: "USD" },
   { symbol: "TSM", market: "US", name: "Taiwan Semiconductor ADR", sector: "Technology", currency: "USD" },
+  { symbol: "CRWD", market: "US", name: "CrowdStrike Holdings", sector: "Technology", currency: "USD" },
+  { symbol: "NET", market: "US", name: "Cloudflare Inc.", sector: "Technology", currency: "USD" },
+  { symbol: "DDOG", market: "US", name: "Datadog Inc.", sector: "Technology", currency: "USD" },
+  { symbol: "SNOW", market: "US", name: "Snowflake Inc.", sector: "Technology", currency: "USD" },
+  { symbol: "MRVL", market: "US", name: "Marvell Technology", sector: "Technology", currency: "USD" },
+  { symbol: "ON", market: "US", name: "ON Semiconductor Corp.", sector: "Technology", currency: "USD" },
+  { symbol: "FTNT", market: "US", name: "Fortinet Inc.", sector: "Technology", currency: "USD" },
+  { symbol: "WDAY", market: "US", name: "Workday Inc.", sector: "Technology", currency: "USD" },
+  { symbol: "TEAM", market: "US", name: "Atlassian Corp.", sector: "Technology", currency: "USD" },
 
   // Communication Services
   { symbol: "GOOGL", market: "US", name: "Alphabet Inc.", sector: "Communication Services", currency: "USD" },
@@ -110,6 +119,8 @@ export const US_UNIVERSE: UniverseEntry[] = [
   { symbol: "VZ", market: "US", name: "Verizon Communications", sector: "Communication Services", currency: "USD" },
   { symbol: "TMUS", market: "US", name: "T-Mobile US Inc.", sector: "Communication Services", currency: "USD" },
   { symbol: "EA", market: "US", name: "Electronic Arts Inc.", sector: "Communication Services", currency: "USD" },
+  { symbol: "TTWO", market: "US", name: "Take-Two Interactive", sector: "Communication Services", currency: "USD" },
+  { symbol: "WBD", market: "US", name: "Warner Bros. Discovery", sector: "Communication Services", currency: "USD" },
 
   // Consumer Discretionary
   { symbol: "AMZN", market: "US", name: "Amazon.com Inc.", sector: "Consumer Discretionary", currency: "USD" },
@@ -122,6 +133,11 @@ export const US_UNIVERSE: UniverseEntry[] = [
   { symbol: "BKNG", market: "US", name: "Booking Holdings", sector: "Consumer Discretionary", currency: "USD" },
   { symbol: "TJX", market: "US", name: "TJX Companies", sector: "Consumer Discretionary", currency: "USD" },
   { symbol: "CMG", market: "US", name: "Chipotle Mexican Grill", sector: "Consumer Discretionary", currency: "USD" },
+  { symbol: "ROST", market: "US", name: "Ross Stores Inc.", sector: "Consumer Discretionary", currency: "USD" },
+  { symbol: "YUM", market: "US", name: "Yum! Brands Inc.", sector: "Consumer Discretionary", currency: "USD" },
+  { symbol: "MAR", market: "US", name: "Marriott International", sector: "Consumer Discretionary", currency: "USD" },
+  { symbol: "GM", market: "US", name: "General Motors Co.", sector: "Consumer Discretionary", currency: "USD" },
+  { symbol: "F", market: "US", name: "Ford Motor Co.", sector: "Consumer Discretionary", currency: "USD" },
 
   // Consumer Staples
   { symbol: "WMT", market: "US", name: "Walmart Inc.", sector: "Consumer Staples", currency: "USD" },
@@ -134,6 +150,11 @@ export const US_UNIVERSE: UniverseEntry[] = [
   { symbol: "CL", market: "US", name: "Colgate-Palmolive", sector: "Consumer Staples", currency: "USD" },
   { symbol: "MDLZ", market: "US", name: "Mondelez International", sector: "Consumer Staples", currency: "USD" },
   { symbol: "TGT", market: "US", name: "Target Corp.", sector: "Consumer Staples", currency: "USD" },
+  { symbol: "KHC", market: "US", name: "Kraft Heinz Co.", sector: "Consumer Staples", currency: "USD" },
+  { symbol: "STZ", market: "US", name: "Constellation Brands", sector: "Consumer Staples", currency: "USD" },
+  { symbol: "KMB", market: "US", name: "Kimberly-Clark Corp.", sector: "Consumer Staples", currency: "USD" },
+  { symbol: "GIS", market: "US", name: "General Mills Inc.", sector: "Consumer Staples", currency: "USD" },
+  { symbol: "SYY", market: "US", name: "Sysco Corp.", sector: "Consumer Staples", currency: "USD" },
 
   // Healthcare
   { symbol: "UNH", market: "US", name: "UnitedHealth Group", sector: "Healthcare", currency: "USD" },
@@ -151,6 +172,14 @@ export const US_UNIVERSE: UniverseEntry[] = [
   { symbol: "ISRG", market: "US", name: "Intuitive Surgical", sector: "Healthcare", currency: "USD" },
   { symbol: "CVS", market: "US", name: "CVS Health Corp.", sector: "Healthcare", currency: "USD" },
   { symbol: "MDT", market: "US", name: "Medtronic plc", sector: "Healthcare", currency: "USD" },
+  { symbol: "VRTX", market: "US", name: "Vertex Pharmaceuticals", sector: "Healthcare", currency: "USD" },
+  { symbol: "REGN", market: "US", name: "Regeneron Pharmaceuticals", sector: "Healthcare", currency: "USD" },
+  { symbol: "ZTS", market: "US", name: "Zoetis Inc.", sector: "Healthcare", currency: "USD" },
+  { symbol: "SYK", market: "US", name: "Stryker Corp.", sector: "Healthcare", currency: "USD" },
+  { symbol: "BSX", market: "US", name: "Boston Scientific Corp.", sector: "Healthcare", currency: "USD" },
+  { symbol: "HCA", market: "US", name: "HCA Healthcare Inc.", sector: "Healthcare", currency: "USD" },
+  { symbol: "CI", market: "US", name: "Cigna Group", sector: "Healthcare", currency: "USD" },
+  { symbol: "ELV", market: "US", name: "Elevance Health Inc.", sector: "Healthcare", currency: "USD" },
 
   // Financials
   { symbol: "JPM", market: "US", name: "JPMorgan Chase & Co.", sector: "Financials", currency: "USD" },
@@ -166,6 +195,16 @@ export const US_UNIVERSE: UniverseEntry[] = [
   { symbol: "BLK", market: "US", name: "BlackRock Inc.", sector: "Financials", currency: "USD" },
   { symbol: "SPGI", market: "US", name: "S&P Global Inc.", sector: "Financials", currency: "USD" },
   { symbol: "PYPL", market: "US", name: "PayPal Holdings", sector: "Financials", currency: "USD" },
+  { symbol: "USB", market: "US", name: "U.S. Bancorp", sector: "Financials", currency: "USD" },
+  { symbol: "PNC", market: "US", name: "PNC Financial Services", sector: "Financials", currency: "USD" },
+  { symbol: "TFC", market: "US", name: "Truist Financial Corp.", sector: "Financials", currency: "USD" },
+  { symbol: "COF", market: "US", name: "Capital One Financial", sector: "Financials", currency: "USD" },
+  { symbol: "MET", market: "US", name: "MetLife Inc.", sector: "Financials", currency: "USD" },
+  { symbol: "PRU", market: "US", name: "Prudential Financial", sector: "Financials", currency: "USD" },
+  { symbol: "AIG", market: "US", name: "American International Group", sector: "Financials", currency: "USD" },
+  { symbol: "ICE", market: "US", name: "Intercontinental Exchange", sector: "Financials", currency: "USD" },
+  { symbol: "CME", market: "US", name: "CME Group Inc.", sector: "Financials", currency: "USD" },
+  { symbol: "MCO", market: "US", name: "Moody's Corp.", sector: "Financials", currency: "USD" },
 
   // Industrials
   { symbol: "GE", market: "US", name: "General Electric Co.", sector: "Industrials", currency: "USD" },
@@ -178,25 +217,50 @@ export const US_UNIVERSE: UniverseEntry[] = [
   { symbol: "DE", market: "US", name: "Deere & Co.", sector: "Industrials", currency: "USD" },
   { symbol: "UNP", market: "US", name: "Union Pacific Corp.", sector: "Industrials", currency: "USD" },
   { symbol: "MMM", market: "US", name: "3M Co.", sector: "Industrials", currency: "USD" },
+  { symbol: "ADP", market: "US", name: "Automatic Data Processing", sector: "Industrials", currency: "USD" },
+  { symbol: "ETN", market: "US", name: "Eaton Corp.", sector: "Industrials", currency: "USD" },
+  { symbol: "EMR", market: "US", name: "Emerson Electric Co.", sector: "Industrials", currency: "USD" },
+  { symbol: "ITW", market: "US", name: "Illinois Tool Works", sector: "Industrials", currency: "USD" },
+  { symbol: "NSC", market: "US", name: "Norfolk Southern Corp.", sector: "Industrials", currency: "USD" },
+  { symbol: "CSX", market: "US", name: "CSX Corp.", sector: "Industrials", currency: "USD" },
+  { symbol: "FDX", market: "US", name: "FedEx Corp.", sector: "Industrials", currency: "USD" },
+  { symbol: "WM", market: "US", name: "Waste Management Inc.", sector: "Industrials", currency: "USD" },
+  { symbol: "PH", market: "US", name: "Parker Hannifin Corp.", sector: "Industrials", currency: "USD" },
 
   // Energy
   { symbol: "XOM", market: "US", name: "Exxon Mobil Corp.", sector: "Energy", currency: "USD" },
   { symbol: "CVX", market: "US", name: "Chevron Corp.", sector: "Energy", currency: "USD" },
   { symbol: "COP", market: "US", name: "ConocoPhillips", sector: "Energy", currency: "USD" },
   { symbol: "SLB", market: "US", name: "Schlumberger (SLB)", sector: "Energy", currency: "USD" },
+  { symbol: "EOG", market: "US", name: "EOG Resources Inc.", sector: "Energy", currency: "USD" },
+  { symbol: "PSX", market: "US", name: "Phillips 66", sector: "Energy", currency: "USD" },
+  { symbol: "OXY", market: "US", name: "Occidental Petroleum", sector: "Energy", currency: "USD" },
+  { symbol: "WMB", market: "US", name: "Williams Companies", sector: "Energy", currency: "USD" },
 
   // Utilities
   { symbol: "NEE", market: "US", name: "NextEra Energy Inc.", sector: "Utilities", currency: "USD" },
   { symbol: "DUK", market: "US", name: "Duke Energy Corp.", sector: "Utilities", currency: "USD" },
   { symbol: "SO", market: "US", name: "Southern Co.", sector: "Utilities", currency: "USD" },
+  { symbol: "D", market: "US", name: "Dominion Energy Inc.", sector: "Utilities", currency: "USD" },
+  { symbol: "AEP", market: "US", name: "American Electric Power", sector: "Utilities", currency: "USD" },
+  { symbol: "EXC", market: "US", name: "Exelon Corp.", sector: "Utilities", currency: "USD" },
+  { symbol: "SRE", market: "US", name: "Sempra", sector: "Utilities", currency: "USD" },
 
   // Real Estate
   { symbol: "AMT", market: "US", name: "American Tower Corp.", sector: "Real Estate", currency: "USD" },
   { symbol: "PLD", market: "US", name: "Prologis Inc.", sector: "Real Estate", currency: "USD" },
+  { symbol: "EQIX", market: "US", name: "Equinix Inc.", sector: "Real Estate", currency: "USD" },
+  { symbol: "O", market: "US", name: "Realty Income Corp.", sector: "Real Estate", currency: "USD" },
+  { symbol: "SPG", market: "US", name: "Simon Property Group", sector: "Real Estate", currency: "USD" },
+  { symbol: "PSA", market: "US", name: "Public Storage", sector: "Real Estate", currency: "USD" },
 
   // Materials
   { symbol: "LIN", market: "US", name: "Linde plc", sector: "Materials", currency: "USD" },
   { symbol: "SHW", market: "US", name: "Sherwin-Williams Co.", sector: "Materials", currency: "USD" },
+  { symbol: "APD", market: "US", name: "Air Products and Chemicals", sector: "Materials", currency: "USD" },
+  { symbol: "ECL", market: "US", name: "Ecolab Inc.", sector: "Materials", currency: "USD" },
+  { symbol: "NEM", market: "US", name: "Newmont Corp.", sector: "Materials", currency: "USD" },
+  { symbol: "FCX", market: "US", name: "Freeport-McMoRan Inc.", sector: "Materials", currency: "USD" },
 ];
 
 const TW_UNIVERSE_TTL_MS = 24 * 60 * 60_000; // official company list changes rarely; refresh once a day
@@ -210,7 +274,7 @@ const TW_UNIVERSE_TTL_MS = 24 * 60 * 60_000; // official company list changes ra
 // unofficial MIS endpoint risks getting the whole site rate-limited —
 // including single-stock lookups that have nothing to do with this list —
 // rather than just leaving this particular screen slow.
-const MAX_TW_UNIVERSE = 100;
+const MAX_TW_UNIVERSE = 200;
 
 // Kept in sync (best-effort, in the background) so the synchronous
 // findInUniverse/sectorsFor helpers below get the fuller official list as

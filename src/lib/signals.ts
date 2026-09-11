@@ -59,5 +59,71 @@ export function computeSignals(candles: Candle[], currentPrice: number, range: C
     signals.push({ label: `連${direction === "up" ? "漲" : "跌"} ${streak} 天`, tone: direction });
   }
 
+  // RSI (14-period, simple average of gains/losses — not Wilder-smoothed,
+  // consistent with the simple-average MA20 above rather than mixing
+  // smoothing methods within the same signal set).
+  const rsi = computeRSI(candles, 14);
+  if (rsi != null) {
+    if (rsi >= 70) signals.push({ label: `RSI ${rsi.toFixed(0)}（超買區）`, tone: "up" });
+    else if (rsi <= 30) signals.push({ label: `RSI ${rsi.toFixed(0)}（超賣區）`, tone: "down" });
+  }
+
+  // MACD golden/death cross: only fires the day the 12/26-EMA MACD line
+  // actually crosses its 9-EMA signal line, not every day it happens to sit
+  // above/below it (which would just restate "上漲/下跌" already covered by
+  // the MA20 and streak signals above).
+  const macd = computeMacdCross(candles);
+  if (macd === "golden") signals.push({ label: "MACD黃金交叉", tone: "up" });
+  else if (macd === "death") signals.push({ label: "MACD死亡交叉", tone: "down" });
+
   return signals;
+}
+
+/** Simple (non-Wilder-smoothed) RSI over the trailing `period` closes. */
+function computeRSI(candles: Candle[], period: number): number | null {
+  if (candles.length < period + 1) return null;
+  let gains = 0;
+  let losses = 0;
+  for (let i = candles.length - period; i < candles.length; i++) {
+    const change = candles[i].close - candles[i - 1].close;
+    if (change > 0) gains += change;
+    else losses -= change;
+  }
+  if (gains === 0 && losses === 0) return null;
+  if (losses === 0) return 100;
+  const rs = gains / losses;
+  return 100 - 100 / (1 + rs);
+}
+
+function ema(values: number[], period: number): number[] {
+  const k = 2 / (period + 1);
+  const result: number[] = [values[0]];
+  for (let i = 1; i < values.length; i++) {
+    result.push(values[i] * k + result[i - 1] * (1 - k));
+  }
+  return result;
+}
+
+/**
+ * Detects whether the MACD line (EMA12 − EMA26) crossed its EMA9 signal
+ * line on the most recent bar. Needs enough bars for EMA26 to have actually
+ * converged before treating the signal line as meaningful — with too few
+ * bars this is just comparing early warm-up noise.
+ */
+function computeMacdCross(candles: Candle[]): "golden" | "death" | null {
+  const MIN_BARS = 50; // "3m" charts run ~60-65 trading days; leave margin for short months
+  if (candles.length < MIN_BARS) return null;
+  const closes = candles.map((c) => c.close);
+  const ema12 = ema(closes, 12);
+  const ema26 = ema(closes, 26);
+  const macdLine = ema12.map((v, i) => v - ema26[i]);
+  const signalLine = ema(macdLine, 9);
+  const last = macdLine.length - 1;
+  const prevMacd = macdLine[last - 1];
+  const prevSignal = signalLine[last - 1];
+  const macd = macdLine[last];
+  const signal = signalLine[last];
+  if (prevMacd <= prevSignal && macd > signal) return "golden";
+  if (prevMacd >= prevSignal && macd < signal) return "death";
+  return null;
 }
