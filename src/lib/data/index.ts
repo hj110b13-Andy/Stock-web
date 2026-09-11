@@ -291,7 +291,7 @@ const MOMENTUM_CANDIDATE_LIMIT = 25;
 // How many candidates are charted at once. A TW chart fetch is itself
 // several requests (one per calendar month), so this is the real knob on
 // how hard this screen hits the upstreams.
-const MOMENTUM_CHART_CONCURRENCY = 4;
+const MOMENTUM_CHART_CONCURRENCY = 25;
 
 /**
  * Stocks where 2+ objective technical signals (see lib/signals.ts) are
