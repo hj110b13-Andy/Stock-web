@@ -1,4 +1,4 @@
-import { findSymbolByName, getChart, getIndices, getQuote } from "@/lib/data";
+import { findSymbolByName, getChart, getIndices, getMultiSignalStocks, getQuote, searchStocks } from "@/lib/data";
 import type { Market } from "@/lib/data";
 import { callAiProviders } from "@/lib/ai/provider";
 import type { ChatTurn } from "@/lib/ai/types";
@@ -44,6 +44,38 @@ async function buildStockGrounding(
   return { symbol: quote.symbol, text: lines.join("\n") };
 }
 
+// Matches "有哪些股票不錯"/"什麼股票要漲了"/"推薦一下"/"今天有什麼強勢股" style
+// questions that aren't about any one stock — asking for a list, not a lookup.
+// Without this, guessSymbolFromText finds nothing, no grounding is attached,
+// and the model (correctly, per its instructions not to invent numbers) just
+// says it has no data — even though the site already computes exactly this
+// kind of thing (焦點排行/技術訊號共振) for the /highlights page.
+const MOVERS_INTENT_PATTERN = /有哪些|哪幾檔|哪支|哪些股票|推薦|不錯的股票|強勢股|熱門股|飆股|焦點股|上漲的股票|要漲|要噴|準備上漲/;
+
+async function buildMoversGrounding(): Promise<string> {
+  const TOP_N = 5;
+  try {
+    const [twGainers, usGainers, twMomentum, usMomentum] = await Promise.all([
+      searchStocks({ market: "TW", sortBy: "changePercent", sortDir: "desc" }),
+      searchStocks({ market: "US", sortBy: "changePercent", sortDir: "desc" }),
+      getMultiSignalStocks("TW"),
+      getMultiSignalStocks("US"),
+    ]);
+    const fmtGainer = (items: typeof twGainers) =>
+      items.slice(0, TOP_N).map((s) => `${s.name}(${s.symbol}) ${s.changePercent >= 0 ? "+" : ""}${s.changePercent}%`).join("、") || "（無資料）";
+    const fmtMomentum = (items: typeof twMomentum) =>
+      items.slice(0, TOP_N).map((s) => `${s.name}(${s.symbol})：${s.signals.map((sig) => sig.label).join("、")}`).join("；") || "（無資料）";
+    return [
+      `台股今日漲幅榜前${TOP_N}：${fmtGainer(twGainers)}`,
+      `美股今日漲幅榜前${TOP_N}：${fmtGainer(usGainers)}`,
+      `台股技術訊號共振股（同時符合≥2個客觀技術訊號，如爆量/站上均線/連續上漲，純數據描述非預測）：${fmtMomentum(twMomentum)}`,
+      `美股技術訊號共振股：${fmtMomentum(usMomentum)}`,
+    ].join("\n");
+  } catch {
+    return "";
+  }
+}
+
 function guessSymbolFromText(text: string): { symbol: string; market: Market } | undefined {
   const byName = findSymbolByName(text);
   if (byName) return { symbol: byName.symbol, market: byName.market };
@@ -67,6 +99,7 @@ export async function answerQuestion(
   const target = contextSymbol
     ? { symbol: contextSymbol, market: undefined as Market | undefined }
     : guessSymbolFromText(question);
+  const wantsMovers = !target && MOVERS_INTENT_PATTERN.test(question);
 
   let groundedSymbol: string | undefined;
 
@@ -75,7 +108,7 @@ export async function answerQuestion(
   // is targeted, so the model can reason about TW/US cross-market influence
   // (e.g. Nasdaq overnight moves affecting semiconductor names) instead of
   // only seeing the one stock in isolation.
-  const [stockGrounding, indexGrounding] = await Promise.all([
+  const [stockGrounding, indexGrounding, moversGrounding] = await Promise.all([
     target ? buildStockGrounding(target) : Promise.resolve(undefined),
     getIndices()
       .then((indices) => {
@@ -83,6 +116,7 @@ export async function answerQuestion(
         return indices.map((i) => `${i.name}：${i.price}（${i.change >= 0 ? "+" : ""}${i.changePercent}%）`).join("\n");
       })
       .catch(() => ""),
+    wantsMovers ? buildMoversGrounding() : Promise.resolve(""),
   ]);
 
   if (stockGrounding) groundedSymbol = stockGrounding.symbol;
@@ -90,16 +124,19 @@ export async function answerQuestion(
   const grounding = [
     stockGrounding ? `【個股資料】\n${stockGrounding.text}` : "",
     indexGrounding ? `【大盤概況（台股＋美股）】\n${indexGrounding}` : "",
+    moversGrounding ? `【今日焦點數據（純數據排序/客觀技術訊號描述，不是預測）】\n${moversGrounding}` : "",
   ]
     .filter(Boolean)
     .join("\n\n");
 
   const system = [
-    "你是一個股票研究網站上的助理，回答繁體中文問題，語氣專業、精簡、條列清楚。",
-    "你會同時拿到「個股資料」（若使用者問特定股票）與「大盤概況」（台股加權指數、道瓊、S&P 500、那斯達克）。",
-    "台股與美股常互相影響（例如美股科技股/半導體夜間走勢，隔天常牽動台股電子權值股），請在分析時主動連結兩邊的資料，而不是只看單一市場；沒有明顯關聯時不用勉強牽拖。",
-    "請根據資料回答，不要編造資料中沒有的數字；若資料標示為無法取得，請誠實告知使用者目前查不到該資訊，不要用其他數字代替。",
-    "務必提醒使用者：這是資訊整理，不構成投資建議。",
+    "你是一個股票研究網站上的助理，回答繁體中文問題。",
+    "風格要求（很重要）：直接講重點、先講結論，語氣像在跟人對話而不是寫報告。不要模稜兩可、不要鋪陳、不要重複同樣的免責聲明兩次以上。能一兩句話講完的就不要條列；只有在真的有好幾個平行項目時才用條列，且每項一行、不要展開解釋。",
+    "你會拿到「個股資料」（使用者問特定股票時）、「大盤概況」（台股加權指數、道瓊、S&P 500、那斯達克），有時候還有「今日焦點數據」（今日漲幅榜、技術訊號共振股——這些是純數據排序或客觀技術狀態描述，不是預測）。",
+    "台股與美股常互相影響（例如美股科技股/半導體夜間走勢，隔天常牽動台股電子權值股），有明顯關聯時才連結兩邊資料分析，沒有的話不用勉強牽拖。",
+    "使用者問『有哪些股票不錯/今天有什麼強勢股/準備上漲的股票』這類問題時：只要拿到「今日焦點數據」，就直接依那份資料具體回答（例如列出今日漲幅榜前幾名、或有技術訊號共振的股票），並清楚說明這只是今日客觀數據排序或技術訊號描述、不是預測未來走勢或投資建議——不要用『資料中沒有個股清單』這種話迴避，那份資料就是用來回答這類問題的。只有在真的沒拿到「今日焦點數據」時才老實說目前沒有相關數據。",
+    "請根據資料回答，不要編造資料中沒有的數字；若資料標示為無法取得，直接說目前查不到，不要繞圈子解釋為什麼查不到。",
+    "結尾提醒一次即可：這是客觀資訊整理，不構成投資建議。不要每段都加一次。",
     "使用者之前的提問與你的回覆會一併附上作為對話紀錄，回答新問題時請自然承接對話脈絡（例如使用者接著問「那美股呢」時，要記得他上一句在問什麼）。",
   ].join("\n");
 
