@@ -106,8 +106,20 @@ export async function callAiProviders(
         .join("\n")
         .trim();
 
-      if (answer) return { answer, usedAi: true };
-      failures.push("Claude 回傳了空白回覆");
+      // Same failure mode Gemini had (see gemini.ts's finishReason check): a
+      // reply cut off by the output-token cap is still a non-empty string,
+      // so without this an Opus QA pass correctly flagged that a truncated
+      // Claude answer — most likely exactly when it's being used because
+      // Gemini already failed — would sail through as usedAi:true and get
+      // cached as-is (the daily brief caches for ~25h) instead of falling
+      // through to the "raw data" canned answer.
+      if (message.stop_reason === "max_tokens") {
+        failures.push("Claude 回覆被輸出長度上限截斷");
+      } else if (answer) {
+        return { answer, usedAi: true };
+      } else {
+        failures.push("Claude 回傳了空白回覆");
+      }
     } catch (err) {
       const errMessage = err instanceof Error ? err.message : String(err);
       console.error("[ai] Anthropic call failed:", errMessage);
