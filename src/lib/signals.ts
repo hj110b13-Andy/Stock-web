@@ -71,10 +71,23 @@ export function computeSignals(candles: Candle[], currentPrice: number, range: C
   // MACD golden/death cross: only fires the day the 12/26-EMA MACD line
   // actually crosses its 9-EMA signal line, not every day it happens to sit
   // above/below it (which would just restate "上漲/下跌" already covered by
-  // the MA20 and streak signals above).
+  // the MA20 and streak signals above). Also reports whether the cross
+  // happened above or below the zero line — standard MACD reading (a golden
+  // cross above zero, where the MACD line is already net-positive, reads as
+  // a stronger confirmation than one below zero/"低檔"; symmetrically for a
+  // death cross) that a flat golden/death label was previously discarding.
   const macd = computeMacdCross(candles);
-  if (macd === "golden") signals.push({ label: "MACD黃金交叉", tone: "up" });
-  else if (macd === "death") signals.push({ label: "MACD死亡交叉", tone: "down" });
+  if (macd?.type === "golden") {
+    signals.push({
+      label: macd.aboveZero ? "MACD黃金交叉（0軸上方，訊號較明確）" : "MACD黃金交叉（0軸下方，屬低檔訊號，力道較弱）",
+      tone: "up",
+    });
+  } else if (macd?.type === "death") {
+    signals.push({
+      label: macd.aboveZero ? "MACD死亡交叉（0軸上方，訊號較明確）" : "MACD死亡交叉（0軸下方，屬續跌訊號，力道較弱）",
+      tone: "down",
+    });
+  }
 
   // Bollinger Bands (20-period SMA ± 2 standard deviations of that same
   // window) — price touching its own trailing band is self-referential
@@ -202,7 +215,7 @@ function ema(values: number[], period: number): number[] {
  * converged before treating the signal line as meaningful — with too few
  * bars this is just comparing early warm-up noise.
  */
-function computeMacdCross(candles: Candle[]): "golden" | "death" | null {
+function computeMacdCross(candles: Candle[]): { type: "golden" | "death"; aboveZero: boolean } | null {
   const MIN_BARS = 50; // "3m" charts run ~60-65 trading days; leave margin for short months
   if (candles.length < MIN_BARS) return null;
   const closes = candles.map((c) => c.close);
@@ -215,7 +228,12 @@ function computeMacdCross(candles: Candle[]): "golden" | "death" | null {
   const prevSignal = signalLine[last - 1];
   const macd = macdLine[last];
   const signal = signalLine[last];
-  if (prevMacd <= prevSignal && macd > signal) return "golden";
-  if (prevMacd >= prevSignal && macd < signal) return "death";
+  // Whether the MACD line itself (not just the cross) sits above or below
+  // zero — the conventional reading treats a cross above zero as a stronger
+  // confirmation than the same cross happening below it (see the signals.ts
+  // call site for the full explanation).
+  const aboveZero = macd >= 0;
+  if (prevMacd <= prevSignal && macd > signal) return { type: "golden", aboveZero };
+  if (prevMacd >= prevSignal && macd < signal) return { type: "death", aboveZero };
   return null;
 }
