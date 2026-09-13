@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import type { NewsFeedItem } from "@/lib/ai/newsfeed";
 import { formatTaipeiDateTime } from "@/lib/format";
 
@@ -106,7 +107,9 @@ export default function NewsFeedList() {
           <h2 className="mb-3 flex items-center gap-1.5 text-sm font-semibold text-(--text-primary)">🔥 重大焦點</h2>
           <ul className="space-y-2">
             {pinned.map((item) => (
-              <NewsFeedRow key={`pinned-${item.id}`} item={item} pinned />
+              <li key={`pinned-${item.id}`}>
+                <NewsFeedRow item={item} pinned />
+              </li>
             ))}
           </ul>
         </section>
@@ -121,7 +124,9 @@ export default function NewsFeedList() {
         ) : (
           <ul className="space-y-2">
             {items.map((item) => (
-              <NewsFeedRow key={item.id} item={item} />
+              <li key={item.id}>
+                <NewsFeedRow item={item} />
+              </li>
             ))}
           </ul>
         )}
@@ -134,28 +139,49 @@ export default function NewsFeedList() {
   );
 }
 
+/**
+ * Deliberately NOT a clickable card — a user asked specifically that the
+ * card show title/time/source and (for pinned items) a plain-language
+ * summary as one block, with the actual outbound link as its own distinct
+ * element at the bottom, rather than the whole row acting as a link that
+ * navigates away on any click.
+ */
 function NewsFeedRow({ item, pinned }: { item: NewsFeedItem; pinned?: boolean }) {
-  const content = (
+  const isInternal = item.kind === "data";
+  return (
     <div
-      className={`rounded-lg border p-3 transition-colors ${
-        pinned
-          ? "border-(--accent) bg-(--accent-soft) hover:opacity-90"
-          : "border-(--gridline) bg-(--surface-1) hover:bg-(--page-plane)"
+      className={`rounded-lg border p-3 ${
+        pinned ? "border-(--accent) bg-(--accent-soft)" : "border-(--gridline) bg-(--surface-1)"
       }`}
     >
       <p className="text-sm font-medium text-(--text-primary)">{item.title}</p>
-      <p className="mt-1 text-xs text-(--text-muted)">
+      {/* --text-muted (tuned against --surface-1) fails WCAG AA on the
+          pinned card's --accent-soft background — 2.71:1 light / 2.26:1
+          dark, an Opus QA pass measured and confirmed visually washed out.
+          --text-secondary clears 4.5:1 against accent-soft in both themes
+          (6.00:1 / 4.52:1) while still reading as secondary/muted next to
+          the title. */}
+      <p className={`mt-1 text-xs ${pinned ? "text-(--text-secondary)" : "text-(--text-muted)"}`}>
         {item.source ?? "來源不明"}
         {item.pubDate && ` · ${formatTaipeiDateTime(item.pubDate).slice(0, -3)}`}
       </p>
+      {item.summary && <p className="mt-2 text-sm text-(--text-primary)">{item.summary}</p>}
+      {item.link &&
+        (isInternal ? (
+          <Link href={item.link} className="mt-2 inline-block text-xs font-medium text-(--accent) hover:underline">
+            查看個股頁面 →
+          </Link>
+        ) : (
+          <a
+            href={item.link}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-2 inline-block text-xs font-medium text-(--accent) hover:underline"
+          >
+            查看原文 ↗
+          </a>
+        ))}
     </div>
-  );
-
-  if (!item.link) return content;
-  return (
-    <a href={item.link} target="_blank" rel="noopener noreferrer" className="block">
-      {content}
-    </a>
   );
 }
 

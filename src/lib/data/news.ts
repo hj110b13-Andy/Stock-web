@@ -164,12 +164,24 @@ const FEED_TOPICS: Array<{ query: string; locales: NewsLocale[] }> = [
 
 const FEED_PER_QUERY_LIMIT = 40;
 
+// A broad query like "CPI inflation" or "地緣政治 石油" doesn't just return
+// recent news — Google News also surfaces evergreen tool/landing pages it
+// happens to index for that topic (a Fear & Greed Index widget, a "how to
+// buy US stocks" guide) and old articles that still rank, with no built-in
+// recency floor. An Opus QA pass scrolled to the very end of the feed and
+// found ~23% of items over 30 days old, some from 2022 — directly
+// contradicting the page's own "近期新聞" framing. This is a page-level
+// concern (not the single-stock/market-news grounding fetchNews() also
+// serves, which only ever asks for a handful of items and reads fine
+// without a cutoff), so the filter lives here rather than in fetchNews().
+const FEED_MAX_AGE_MS = 14 * 24 * 60 * 60_000;
+
 /**
  * Builds the raw pool the news feed page pages through: every topic query
- * fetched in parallel, merged and de-duplicated by title, newest first.
- * Callers (getNewsFeed in lib/ai/newsfeed.ts) are expected to cache this —
- * it fans out to a dozen+ real HTTP requests, not something to redo per page
- * scroll.
+ * fetched in parallel, merged, de-duplicated by title, filtered to a recency
+ * window, newest first. Callers (getNewsFeed in lib/ai/newsfeed.ts) are
+ * expected to cache this — it fans out to a dozen+ real HTTP requests, not
+ * something to redo per page scroll.
  */
 export async function fetchNewsFeedPool(): Promise<NewsItem[]> {
   const results = await Promise.all(
@@ -177,7 +189,8 @@ export async function fetchNewsFeedPool(): Promise<NewsItem[]> {
       topic.locales.map((locale) => fetchNews(topic.query, FEED_PER_QUERY_LIMIT, locale).catch(() => []))
     )
   );
-  const merged = dedupeNews(results.flat().filter((item) => item.pubDate));
+  const cutoff = Date.now() - FEED_MAX_AGE_MS;
+  const merged = dedupeNews(results.flat().filter((item) => item.pubDate && Date.parse(item.pubDate) >= cutoff));
   merged.sort((a, b) => b.pubDate.localeCompare(a.pubDate));
   return merged;
 }
