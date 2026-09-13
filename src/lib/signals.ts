@@ -76,7 +76,99 @@ export function computeSignals(candles: Candle[], currentPrice: number, range: C
   if (macd === "golden") signals.push({ label: "MACD黃金交叉", tone: "up" });
   else if (macd === "death") signals.push({ label: "MACD死亡交叉", tone: "down" });
 
+  // Bollinger Bands (20-period SMA ± 2 standard deviations of that same
+  // window) — price touching its own trailing band is self-referential
+  // (compares the stock to its own recent volatility, not a fixed threshold
+  // that would mean different things for a quiet blue-chip vs a volatile
+  // small-cap), so this stays consistent with the rest of this file's
+  // "compare to itself" approach. Deliberately not adding a "band squeeze"
+  // (narrow-width) signal: what counts as "narrow" only makes sense relative
+  // to a stock's own historical band width, which needs a longer lookback
+  // than what's reliably available here — a single cross-stock width
+  // threshold would be exactly the kind of false-precision this codebase
+  // avoids elsewhere.
+  const bollinger = computeBollingerSignal(candles, currentPrice);
+  if (bollinger) signals.push(bollinger);
+
+  // KD (stochastic oscillator, 9,3,3) — like MACD above, only fires on the
+  // day %K actually crosses %D, and only when that cross happens in the
+  // extreme (oversold/overbought) zone, which is the conventional reading;
+  // a cross in the middle of the range is just noise.
+  const kd = computeKdCross(candles);
+  if (kd === "golden") signals.push({ label: "KD低檔黃金交叉", tone: "up" });
+  else if (kd === "death") signals.push({ label: "KD高檔死亡交叉", tone: "down" });
+
   return signals;
+}
+
+/** Trailing simple moving average — returns one value per input index, null
+ *  wherever there isn't yet a full window (keeps the caller's indices
+ *  aligned with the input array instead of needing separate offset math). */
+function sma(values: number[], period: number): (number | null)[] {
+  const result: (number | null)[] = [];
+  for (let i = 0; i < values.length; i++) {
+    if (i < period - 1) {
+      result.push(null);
+      continue;
+    }
+    const slice = values.slice(i - period + 1, i + 1);
+    result.push(slice.reduce((a, b) => a + b, 0) / period);
+  }
+  return result;
+}
+
+function computeBollingerSignal(candles: Candle[], currentPrice: number): Signal | null {
+  const PERIOD = 20;
+  if (candles.length < PERIOD) return null;
+  const window = candles.slice(-PERIOD).map((c) => c.close);
+  const mean = window.reduce((a, b) => a + b, 0) / PERIOD;
+  const variance = window.reduce((a, c) => a + (c - mean) ** 2, 0) / PERIOD;
+  const stdDev = Math.sqrt(variance);
+  const upper = mean + 2 * stdDev;
+  const lower = mean - 2 * stdDev;
+  if (currentPrice >= upper) return { label: "觸及布林通道上緣（波動放大）", tone: "up" };
+  if (currentPrice <= lower) return { label: "觸及布林通道下緣（波動放大）", tone: "down" };
+  return null;
+}
+
+/**
+ * %K = (close − trailing-N low) / (trailing-N high − trailing-N low) × 100,
+ * then smoothed twice by a 3-period SMA (the conventional "slow" KD: the
+ * once-smoothed series is %K, the twice-smoothed series is %D) — matches
+ * the (9,3,3) parameters most charting platforms default to.
+ */
+function computeKdCross(candles: Candle[]): "golden" | "death" | null {
+  const PERIOD = 9;
+  const SMOOTH = 3;
+  if (candles.length < PERIOD + SMOOTH * 2) return null;
+
+  const rawK = candles.map((c, i) => {
+    if (i < PERIOD - 1) return null;
+    const window = candles.slice(i - PERIOD + 1, i + 1);
+    const highestHigh = Math.max(...window.map((w) => w.high));
+    const lowestLow = Math.min(...window.map((w) => w.low));
+    const range = highestHigh - lowestLow;
+    return range > 0 ? ((c.close - lowestLow) / range) * 100 : 50;
+  });
+  const validRawK = rawK.filter((v): v is number => v !== null);
+  const kSeries = sma(validRawK, SMOOTH).filter((v): v is number => v !== null);
+  const dSeries = sma(kSeries, SMOOTH).filter((v): v is number => v !== null);
+
+  if (kSeries.length < 2 || dSeries.length < 2) return null;
+  // Both series' *last* entries land on the same (most recent) trading day —
+  // dSeries is derived from kSeries but is only shorter at the front (it
+  // needs an extra SMOOTH-1 days of kSeries before it can start), so
+  // indexing from the end keeps same-day values paired without extra offset
+  // math: kSeries[len-1]/dSeries[len-1] is "today", [len-2] is "yesterday".
+  const lastK = kSeries[kSeries.length - 1];
+  const prevK = kSeries[kSeries.length - 2];
+  const lastD = dSeries[dSeries.length - 1];
+  const prevD = dSeries[dSeries.length - 2];
+  if (lastK === undefined || prevK === undefined || lastD === undefined || prevD === undefined) return null;
+
+  if (prevK <= prevD && lastK > lastD && lastK <= 30) return "golden";
+  if (prevK >= prevD && lastK < lastD && lastK >= 70) return "death";
+  return null;
 }
 
 /** Simple (non-Wilder-smoothed) RSI over the trailing `period` closes. */

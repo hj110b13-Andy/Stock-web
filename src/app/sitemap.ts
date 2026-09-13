@@ -13,6 +13,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     { url: `${SITE_URL}/search`, changeFrequency: "hourly", priority: 0.8 },
     { url: `${SITE_URL}/highlights`, changeFrequency: "hourly", priority: 0.8 },
     { url: `${SITE_URL}/news`, changeFrequency: "hourly", priority: 0.7 },
+    { url: `${SITE_URL}/action`, changeFrequency: "hourly", priority: 0.8 },
   ];
 
   const twUniverse = await getTwUniverse();

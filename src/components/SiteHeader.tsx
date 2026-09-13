@@ -31,6 +31,9 @@ export default function SiteHeader({ authEnabled }: { authEnabled: boolean }) {
           <Link href="/" className="px-3 py-2 rounded-md text-(--text-secondary) hover:text-(--text-primary) hover:bg-(--page-plane)">
             首頁
           </Link>
+          <Link href="/action" className="px-3 py-2 rounded-md text-(--text-secondary) hover:text-(--text-primary) hover:bg-(--page-plane)">
+            今日建議
+          </Link>
           <Link href="/highlights" className="px-3 py-2 rounded-md text-(--text-secondary) hover:text-(--text-primary) hover:bg-(--page-plane)">
             每日焦點
           </Link>
@@ -57,6 +60,9 @@ export default function SiteHeader({ authEnabled }: { authEnabled: boolean }) {
       <nav className="flex sm:hidden items-center gap-1 px-4 pb-2 text-sm">
         <Link href="/" className="px-3 py-1.5 rounded-md text-(--text-secondary) hover:bg-(--page-plane)">
           首頁
+        </Link>
+        <Link href="/action" className="px-3 py-1.5 rounded-md text-(--text-secondary) hover:bg-(--page-plane)">
+          今日建議
         </Link>
         <Link href="/highlights" className="px-3 py-1.5 rounded-md text-(--text-secondary) hover:bg-(--page-plane)">
           每日焦點
