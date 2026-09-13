@@ -7,6 +7,24 @@ export interface Signal {
 
 const RANGE_LABEL: Record<ChartRange, string> = { "1m": "1個月", "3m": "3個月", "6m": "6個月", "1y": "1年" };
 
+function trailingAverage(closes: number[], period: number): number {
+  const window = closes.slice(-period);
+  return window.reduce((a, b) => a + b, 0) / window.length;
+}
+
+/** 5/10/20-day moving averages stacked in trend order — "bullish" when
+ *  5-day > 10-day > 20-day, "bearish" when the order is fully reversed. */
+function computeMaAlignment(candles: Candle[]): "bullish" | "bearish" | null {
+  if (candles.length < 20) return null;
+  const closes = candles.map((c) => c.close);
+  const ma5 = trailingAverage(closes, 5);
+  const ma10 = trailingAverage(closes, 10);
+  const ma20 = trailingAverage(closes, 20);
+  if (ma5 > ma10 && ma10 > ma20) return "bullish";
+  if (ma5 < ma10 && ma10 < ma20) return "bearish";
+  return null;
+}
+
 /**
  * Purely descriptive, objective technical signals computed from OHLCV data
  * already on the page — no recommendation, no "buy/sell" language. Each
@@ -43,6 +61,16 @@ export function computeSignals(candles: Candle[], currentPrice: number, range: C
     if (currentPrice > ma20) signals.push({ label: "站上20日均線", tone: "up" });
     else if (currentPrice < ma20) signals.push({ label: "跌破20日均線", tone: "down" });
   }
+
+  // Moving-average alignment (多頭/空頭排列) — a different question from the
+  // single "price vs MA20" signal above: whether the short/mid/longer
+  // averages are THEMSELVES stacked in trend order (5-day above 10-day
+  // above 20-day, or the reverse), which is the standard way to read
+  // "is the trend structure itself aligned across timeframes" rather than
+  // just "where does today's price sit relative to one average."
+  const maAlignment = computeMaAlignment(candles);
+  if (maAlignment === "bullish") signals.push({ label: "均線多頭排列（5日線在10日線、10日線在20日線之上）", tone: "up" });
+  else if (maAlignment === "bearish") signals.push({ label: "均線空頭排列（5日線在10日線、10日線在20日線之下）", tone: "down" });
 
   // Consecutive up/down days (from the most recent bar backwards).
   let streak = 0;
