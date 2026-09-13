@@ -4,6 +4,11 @@ export interface NewsItem {
   title: string;
   source?: string;
   pubDate: string;
+  /** Article URL (a Google News redirect that forwards to the original
+   *  publisher page) — absent from older cached news.ts callers that only
+   *  ever displayed title+source as plain text; the news feed page is what
+   *  actually needs to link out to a source. */
+  link?: string;
 }
 
 const NEWS_TTL_MS = 20 * 60_000; // headlines don't need second-by-second freshness
@@ -51,14 +56,27 @@ function parseRssItems(xml: string, limit: number): NewsItem[] {
     const block = match[1];
     const rawTitle = block.match(/<title>([\s\S]*?)<\/title>/)?.[1];
     const pubDate = block.match(/<pubDate>([\s\S]*?)<\/pubDate>/)?.[1];
+    const link = block.match(/<link>([\s\S]*?)<\/link>/)?.[1];
+    // Google News RSS carries the publisher name in a dedicated <source> tag
+    // (e.g. `<source url="https://tw.news.yahoo.com">Yahoo新聞</source>`) —
+    // more reliable than guessing from the title text, which is what this
+    // used to do (splitting on " - ", which breaks for any title that
+    // legitimately contains " - " itself).
+    const taggedSource = block.match(/<source[^>]*>([\s\S]*?)<\/source>/)?.[1];
     if (!rawTitle) continue;
-    const title = decodeXmlEntities(rawTitle);
-    // Google News titles end with " - <source>" (e.g. "... - finance.ettoday.net").
-    const sourceMatch = title.match(/^(.*) - ([^-]+)$/);
+    let title = decodeXmlEntities(rawTitle);
+    // The " - <source>" suffix (e.g. "... - Yahoo新聞") is present in the
+    // title REGARDLESS of whether the <source> tag also exists, so this
+    // always needs stripping — only which string becomes `source` differs
+    // (the tag, when present, is more reliable than re-parsing the title).
+    const titleSourceMatch = title.match(/^(.*) - ([^-]+)$/);
+    if (titleSourceMatch) title = titleSourceMatch[1].trim();
+    const source = taggedSource ? decodeXmlEntities(taggedSource).trim() : titleSourceMatch?.[2]?.trim();
     items.push({
-      title: sourceMatch ? sourceMatch[1].trim() : title,
-      source: sourceMatch ? sourceMatch[2].trim() : undefined,
+      title,
+      source,
       pubDate: pubDate ? new Date(pubDate).toISOString() : "",
+      link: link ? decodeXmlEntities(link).trim() : undefined,
     });
   }
   return items;
@@ -119,4 +137,47 @@ export async function fetchUsMarketNews(perLocaleLimit = 5): Promise<NewsItem[]>
     fetchNews("US stock market", perLocaleLimit, "en-US").catch(() => []),
   ]);
   return dedupeNews([...zh, ...en]);
+}
+
+/**
+ * Topics fanned out for the news feed page (/news) — a single query already
+ * returns up to ~100 items from Google News, but all from one search term's
+ * framing. Spreading across TW-market, US-market, macro and sector queries
+ * (some also pulling the en-US edition) is what gives the feed enough real
+ * breadth and volume to page through, rather than 100 near-duplicate
+ * results about one narrow topic.
+ */
+const FEED_TOPICS: Array<{ query: string; locales: NewsLocale[] }> = [
+  { query: "台股", locales: ["zh-TW"] },
+  { query: "台積電", locales: ["zh-TW"] },
+  { query: "台股 外資", locales: ["zh-TW"] },
+  { query: "台灣 央行 升息", locales: ["zh-TW"] },
+  { query: "電子股 半導體", locales: ["zh-TW"] },
+  { query: "台股 金融股", locales: ["zh-TW"] },
+  { query: "美股", locales: ["zh-TW", "en-US"] },
+  { query: "Fed interest rate", locales: ["zh-TW", "en-US"] },
+  { query: "那斯達克 道瓊", locales: ["zh-TW"] },
+  { query: "CPI inflation", locales: ["zh-TW", "en-US"] },
+  { query: "AI chip semiconductor", locales: ["zh-TW", "en-US"] },
+  { query: "地緣政治 石油", locales: ["zh-TW"] },
+];
+
+const FEED_PER_QUERY_LIMIT = 40;
+
+/**
+ * Builds the raw pool the news feed page pages through: every topic query
+ * fetched in parallel, merged and de-duplicated by title, newest first.
+ * Callers (getNewsFeed in lib/ai/newsfeed.ts) are expected to cache this —
+ * it fans out to a dozen+ real HTTP requests, not something to redo per page
+ * scroll.
+ */
+export async function fetchNewsFeedPool(): Promise<NewsItem[]> {
+  const results = await Promise.all(
+    FEED_TOPICS.flatMap((topic) =>
+      topic.locales.map((locale) => fetchNews(topic.query, FEED_PER_QUERY_LIMIT, locale).catch(() => []))
+    )
+  );
+  const merged = dedupeNews(results.flat().filter((item) => item.pubDate));
+  merged.sort((a, b) => b.pubDate.localeCompare(a.pubDate));
+  return merged;
 }
