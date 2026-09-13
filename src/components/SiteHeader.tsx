@@ -57,20 +57,28 @@ export default function SiteHeader({ authEnabled }: { authEnabled: boolean }) {
         {authEnabled && <AuthButton />}
         <ThemeToggle />
       </div>
-      <nav className="flex sm:hidden items-center gap-1 px-4 pb-2 text-sm">
-        <Link href="/" className="px-3 py-1.5 rounded-md text-(--text-secondary) hover:bg-(--page-plane)">
+      {/* overflow-x-auto + whitespace-nowrap: 5 nav items no longer fit an
+          average phone width on one line without wrapping — an Opus QA pass
+          measured every label breaking mid-word ("今日建/議") at every real
+          phone width once this went from 3 items to 5. A horizontally
+          scrollable row keeps each label intact; there's no visual "more"
+          affordance, but the row starting mid-scroll on first-visible items
+          is a familiar enough mobile pattern and avoids a bigger layout
+          rework for what's still a short list. */}
+      <nav className="flex sm:hidden items-center gap-1 overflow-x-auto px-4 pb-2 text-sm">
+        <Link href="/" className="shrink-0 whitespace-nowrap rounded-md px-3 py-1.5 text-(--text-secondary) hover:bg-(--page-plane)">
           首頁
         </Link>
-        <Link href="/action" className="px-3 py-1.5 rounded-md text-(--text-secondary) hover:bg-(--page-plane)">
+        <Link href="/action" className="shrink-0 whitespace-nowrap rounded-md px-3 py-1.5 text-(--text-secondary) hover:bg-(--page-plane)">
           今日建議
         </Link>
-        <Link href="/highlights" className="px-3 py-1.5 rounded-md text-(--text-secondary) hover:bg-(--page-plane)">
+        <Link href="/highlights" className="shrink-0 whitespace-nowrap rounded-md px-3 py-1.5 text-(--text-secondary) hover:bg-(--page-plane)">
           每日焦點
         </Link>
-        <Link href="/news" className="px-3 py-1.5 rounded-md text-(--text-secondary) hover:bg-(--page-plane)">
+        <Link href="/news" className="shrink-0 whitespace-nowrap rounded-md px-3 py-1.5 text-(--text-secondary) hover:bg-(--page-plane)">
           重大新聞
         </Link>
-        <Link href="/search" className="px-3 py-1.5 rounded-md text-(--text-secondary) hover:bg-(--page-plane)">
+        <Link href="/search" className="shrink-0 whitespace-nowrap rounded-md px-3 py-1.5 text-(--text-secondary) hover:bg-(--page-plane)">
           搜尋 / 篩選
         </Link>
       </nav>
