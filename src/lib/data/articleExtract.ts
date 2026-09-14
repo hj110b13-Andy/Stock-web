@@ -1,6 +1,28 @@
-import { fetchWithTimeout } from "./cache";
-
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+/**
+ * Deliberately NOT cache.ts's `fetchWithTimeout`: that helper clears its
+ * abort timer in a `finally` right after the `fetch()` call resolves — which
+ * the Fetch API does once response headers arrive, before the body is fully
+ * downloaded — so its timeout only bounds connecting, not reading the body.
+ * That's fine for the small JSON responses its other callers deal with, but
+ * this file's own pages are not small (Google's interstitial page alone ran
+ * ~570-590KB in real testing, and arbitrary publisher article pages can be
+ * larger still), so a slow body download here needs to be covered by the
+ * same deadline as the request itself — hence a local variant that keeps the
+ * abort armed across both the fetch and the `.text()` read.
+ */
+async function fetchTextWithDeadline(url: string, timeoutMs: number, init?: RequestInit): Promise<string> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...init, signal: controller.signal, cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.text();
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 // Real article body text needs a real browser-like text/html Accept header —
 // some publishers (observed: a few Yahoo/Taiwanese finance sites) serve a
@@ -58,10 +80,9 @@ async function resolveArticleUrl(googleNewsLink: string): Promise<string | null>
 
   let html: string;
   try {
-    const res = await fetchWithTimeout(`https://news.google.com/rss/articles/${articleId}?oc=5&hl=en-US&gl=US&ceid=US:en`, 3500, {
+    html = await fetchTextWithDeadline(`https://news.google.com/rss/articles/${articleId}?oc=5&hl=en-US&gl=US&ceid=US:en`, 2500, {
       headers: { "User-Agent": UA },
     });
-    html = await res.text();
   } catch {
     return null;
   }
@@ -80,9 +101,9 @@ async function resolveArticleUrl(googleNewsLink: string): Promise<string | null>
   const freq = JSON.stringify([[["Fbv4je", innerReq, null, "generic"]]]);
 
   try {
-    const res = await fetchWithTimeout(
+    const text = await fetchTextWithDeadline(
       "https://news.google.com/_/DotsSplashUi/data/batchexecute?rpcids=Fbv4je&source-path=%2Frss%2Farticles%2F&hl=en-US&gl=US",
-      3000,
+      2000,
       {
         method: "POST",
         headers: {
@@ -92,7 +113,6 @@ async function resolveArticleUrl(googleNewsLink: string): Promise<string | null>
         body: new URLSearchParams({ "f.req": freq }).toString(),
       }
     );
-    const text = await res.text();
     // Response is Google's "anti-JSON-hijacking" batchexecute format: a
     // `)]}'` prefix line, then one JSON array per RPC response. We only sent
     // one RPC, so find the line that actually carries its payload.
@@ -189,14 +209,13 @@ export async function fetchArticleFullText(googleNewsLink: string): Promise<stri
     const realUrl = await resolveArticleUrl(googleNewsLink);
     if (!realUrl) return null;
 
-    // fetchWithTimeout throws on a non-2xx response (see cache.ts), so a 403/
-    // 404/5xx here is caught by the outer catch below, same as a network
-    // error or timeout — all three collapse to the same "extraction failed,
-    // fall back" outcome for this function's caller.
-    const res = await fetchWithTimeout(realUrl, 4500, {
+    // A non-2xx response (403/404/5xx), a network error, or a timeout (of
+    // either connecting or downloading the body — see fetchTextWithDeadline)
+    // all collapse to the same "extraction failed, fall back" outcome via
+    // the outer catch below.
+    const html = await fetchTextWithDeadline(realUrl, 3500, {
       headers: { "User-Agent": UA, Accept: HTML_ACCEPT },
     });
-    const html = await res.text();
     const text = extractMainText(html);
     return text.length >= MIN_TEXT_LEN ? text : null;
   } catch {

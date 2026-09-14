@@ -125,8 +125,16 @@ const SUMMARY_MAX_LEN = 100;
 // those calls always hit news.google.com regardless of which publisher the
 // article is from, so an unbounded fan-out would hammer one host, and a
 // user's page load shouldn't fire dozens of simultaneous outbound requests
-// either way.
-const FULLTEXT_FETCH_CONCURRENCY = 6;
+// either way. 10 (not lower) matters for the route's 60s budget: each
+// item's pipeline has a worst-case ~8s ceiling (its three fetches' own
+// timeouts sum to 2.5+2+3.5s), so with up to ~15-20 "news"-kind items
+// candidate on a cold page, concurrency 10 keeps this to 2 waves (~16s worst
+// case) instead of 6's ~3 waves (~24s) — found by an actual production 504
+// (60s timeout) on a `?refresh=1` request that stacks pool regeneration +
+// this extraction pass + two AI calls in one request; a real visit without
+// `refresh=1` only ever pays for the extraction+AI part, which is the common
+// case this budget is really sized for.
+const FULLTEXT_FETCH_CONCURRENCY = 10;
 
 interface StoredSummary {
   summary: string;
