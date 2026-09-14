@@ -1,6 +1,6 @@
 import https from "node:https";
 import tls from "node:tls";
-import { cachedMap } from "./cache";
+import { cachedMap, mapWithConcurrency } from "./cache";
 import type { Candle, ChartRange, Chips, Earnings, Fundamentals, MaterialAnnouncement, Quote } from "./types";
 import { findInUniverse, type UniverseEntry } from "./universe";
 import { TW_INDUSTRY_NAMES } from "./twse";
@@ -363,7 +363,14 @@ export async function fetchTpexQuotesBatch(stockNos: string[]): Promise<Map<stri
 // Historical daily candles (for charts)
 // ---------------------------------------------------------------------------
 
-const RANGE_MONTHS: Record<ChartRange, number> = { "1m": 1, "3m": 3, "6m": 6, "1y": 12 };
+const RANGE_MONTHS: Partial<Record<ChartRange, number>> = { "1m": 1, "3m": 3, "6m": 6, "1y": 12, "2y": 24, "5y": 60, "10y": 120 };
+// 5d/10d are day-COUNT ranges, not month ranges — trimmed by candle count
+// after fetching (see fetchTpexCandles below), same convention as twse.ts.
+const RANGE_DAYS: Partial<Record<ChartRange, number>> = { "5d": 5, "10d": 10 };
+// Same reasoning as twse.ts's MONTH_FETCH_CONCURRENCY: a 10-year chart means
+// 120 monthly requests to this legacy per-symbol endpoint for one stock —
+// bounded so a long-range chart doesn't fire 120 simultaneous requests.
+const MONTH_FETCH_CONCURRENCY = 10;
 
 function taipeiToday(): { year: number; month: number; day: number } {
   const [y, m, d] = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei" })
@@ -420,18 +427,32 @@ async function fetchTpexMonth(stockNo: string, year: number, month: number): Pro
 }
 
 export async function fetchTpexCandles(stockNo: string, range: ChartRange): Promise<Candle[]> {
-  const months = RANGE_MONTHS[range];
   const { year, month, day } = taipeiToday();
 
-  const cursor = new Date(Date.UTC(year, month - 1, 1));
-  const requests: Promise<Candle[]>[] = [];
-  for (let i = 0; i <= months; i++) {
-    requests.push(fetchTpexMonth(stockNo, cursor.getUTCFullYear(), cursor.getUTCMonth() + 1));
-    cursor.setUTCMonth(cursor.getUTCMonth() - 1);
+  const days = RANGE_DAYS[range];
+  if (days != null) {
+    const cursor = new Date(Date.UTC(year, month - 1, 1));
+    const cursors = Array.from({ length: 2 }, () => {
+      const c = { y: cursor.getUTCFullYear(), m: cursor.getUTCMonth() + 1 };
+      cursor.setUTCMonth(cursor.getUTCMonth() - 1);
+      return c;
+    });
+    const monthly = await mapWithConcurrency(cursors, MONTH_FETCH_CONCURRENCY, (c) => fetchTpexMonth(stockNo, c.y, c.m));
+    const merged = monthly.flat().sort((a, b) => a.time.localeCompare(b.time));
+    if (merged.length === 0) throw new Error(`No TPEx candles for ${stockNo}`);
+    return merged.slice(-days);
   }
 
+  const months = RANGE_MONTHS[range] ?? 3;
+  const cursor = new Date(Date.UTC(year, month - 1, 1));
+  const cursors = Array.from({ length: months + 1 }, () => {
+    const c = { y: cursor.getUTCFullYear(), m: cursor.getUTCMonth() + 1 };
+    cursor.setUTCMonth(cursor.getUTCMonth() - 1);
+    return c;
+  });
+
   const cutoffIso = monthsBefore(year, month, day, months);
-  const monthly = await Promise.all(requests);
+  const monthly = await mapWithConcurrency(cursors, MONTH_FETCH_CONCURRENCY, (c) => fetchTpexMonth(stockNo, c.y, c.m));
   const merged = monthly
     .flat()
     .filter((c) => c.time >= cutoffIso)

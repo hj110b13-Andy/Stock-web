@@ -1,0 +1,181 @@
+import type { Candle } from "@/lib/data/types";
+
+// Full-series versions of the same indicators lib/signals.ts already
+// computes for the text signal tags (same formulas, same parameters — kept
+// as a separate module rather than exported from signals.ts because that
+// file only ever needed the LATEST value/cross, not a value per candle to
+// draw as a chart line). Every series is aligned to the input candles by
+// `time` string, with no entry for a candle that doesn't yet have enough
+// trailing history — callers should not assume one point per input candle.
+
+export interface IndicatorPoint {
+  time: string;
+  value: number;
+}
+
+function sma(values: number[], period: number): (number | null)[] {
+  const result: (number | null)[] = [];
+  for (let i = 0; i < values.length; i++) {
+    if (i < period - 1) {
+      result.push(null);
+      continue;
+    }
+    const slice = values.slice(i - period + 1, i + 1);
+    result.push(slice.reduce((a, b) => a + b, 0) / period);
+  }
+  return result;
+}
+
+function ema(values: number[], period: number): number[] {
+  const k = 2 / (period + 1);
+  const result: number[] = [values[0]];
+  for (let i = 1; i < values.length; i++) {
+    result.push(values[i] * k + result[i - 1] * (1 - k));
+  }
+  return result;
+}
+
+export function computeMaSeries(candles: Candle[], period: number): IndicatorPoint[] {
+  const closes = candles.map((c) => c.close);
+  const values = sma(closes, period);
+  const points: IndicatorPoint[] = [];
+  for (let i = 0; i < candles.length; i++) {
+    const v = values[i];
+    if (v != null) points.push({ time: candles[i].time, value: v });
+  }
+  return points;
+}
+
+export interface BollingerSeries {
+  upper: IndicatorPoint[];
+  middle: IndicatorPoint[];
+  lower: IndicatorPoint[];
+}
+
+/** 20-period SMA ± `mult` standard deviations of that same window — same
+ *  parameters as lib/signals.ts's computeBollingerSignal. */
+export function computeBollingerSeries(candles: Candle[], period = 20, mult = 2): BollingerSeries {
+  const upper: IndicatorPoint[] = [];
+  const middle: IndicatorPoint[] = [];
+  const lower: IndicatorPoint[] = [];
+  const closes = candles.map((c) => c.close);
+  for (let i = period - 1; i < candles.length; i++) {
+    const window = closes.slice(i - period + 1, i + 1);
+    const mean = window.reduce((a, b) => a + b, 0) / period;
+    const variance = window.reduce((a, c) => a + (c - mean) ** 2, 0) / period;
+    const stdDev = Math.sqrt(variance);
+    const time = candles[i].time;
+    middle.push({ time, value: mean });
+    upper.push({ time, value: mean + mult * stdDev });
+    lower.push({ time, value: mean - mult * stdDev });
+  }
+  return { upper, middle, lower };
+}
+
+/** Simple (non-Wilder-smoothed) RSI, one value per candle once `period`
+ *  trailing closes are available — same method as lib/signals.ts's
+ *  computeRSI, just returning every day's value instead of only the last. */
+export function computeRsiSeries(candles: Candle[], period = 14): IndicatorPoint[] {
+  const points: IndicatorPoint[] = [];
+  for (let i = period; i < candles.length; i++) {
+    let gains = 0;
+    let losses = 0;
+    for (let j = i - period + 1; j <= i; j++) {
+      const change = candles[j].close - candles[j - 1].close;
+      if (change > 0) gains += change;
+      else losses -= change;
+    }
+    if (gains === 0 && losses === 0) continue;
+    const value = losses === 0 ? 100 : 100 - 100 / (1 + gains / losses);
+    points.push({ time: candles[i].time, value });
+  }
+  return points;
+}
+
+export interface MacdSeries {
+  macd: IndicatorPoint[];
+  signal: IndicatorPoint[];
+  histogram: IndicatorPoint[];
+}
+
+/** EMA12 − EMA26, its EMA9 signal line, and their difference as a histogram
+ *  — same parameters as lib/signals.ts's computeMacdCross. EMA warm-up means
+ *  the first ~26 bars are numerically noisy (not enough history for EMA26
+ *  to have converged); trimmed to start at the same MIN_BARS threshold
+ *  signals.ts uses before treating the signal line as meaningful. */
+export function computeMacdSeries(candles: Candle[]): MacdSeries {
+  const MIN_BARS = 50;
+  if (candles.length < MIN_BARS) return { macd: [], signal: [], histogram: [] };
+  const closes = candles.map((c) => c.close);
+  const ema12 = ema(closes, 12);
+  const ema26 = ema(closes, 26);
+  const macdLine = ema12.map((v, i) => v - ema26[i]);
+  const signalLine = ema(macdLine, 9);
+  const macd: IndicatorPoint[] = [];
+  const signal: IndicatorPoint[] = [];
+  const histogram: IndicatorPoint[] = [];
+  // Skip the same warm-up window signals.ts implicitly relies on being past
+  // (MIN_BARS) so the plotted line doesn't open with visibly-wrong EMA
+  // warm-up noise before that point.
+  for (let i = MIN_BARS - 1; i < candles.length; i++) {
+    const time = candles[i].time;
+    macd.push({ time, value: macdLine[i] });
+    signal.push({ time, value: signalLine[i] });
+    histogram.push({ time, value: macdLine[i] - signalLine[i] });
+  }
+  return { macd, signal, histogram };
+}
+
+export interface KdSeries {
+  k: IndicatorPoint[];
+  d: IndicatorPoint[];
+}
+
+/** (9,3,3) stochastic oscillator — same method/parameters as
+ *  lib/signals.ts's computeKdCross, returning the full %K/%D series instead
+ *  of only the latest cross. */
+export function computeKdSeries(candles: Candle[]): KdSeries {
+  const PERIOD = 9;
+  const SMOOTH = 3;
+  if (candles.length < PERIOD + SMOOTH * 2) return { k: [], d: [] };
+
+  const rawK: (number | null)[] = candles.map((c, i) => {
+    if (i < PERIOD - 1) return null;
+    const window = candles.slice(i - PERIOD + 1, i + 1);
+    const highestHigh = Math.max(...window.map((w) => w.high));
+    const lowestLow = Math.min(...window.map((w) => w.low));
+    const range = highestHigh - lowestLow;
+    return range > 0 ? ((c.close - lowestLow) / range) * 100 : 50;
+  });
+  const firstValidIndex = rawK.findIndex((v) => v !== null);
+  if (firstValidIndex === -1) return { k: [], d: [] };
+  const validRawK = rawK.slice(firstValidIndex) as number[];
+  const kValues = sma(validRawK, SMOOTH);
+  const kValuesCompact = kValues.filter((v): v is number => v !== null);
+  const dValues = sma(kValuesCompact, SMOOTH);
+
+  // kValuesCompact[j] corresponds to candle index firstValidIndex + SMOOTH-1 + j
+  // (sma() drops the first SMOOTH-1 entries of validRawK as nulls before the
+  // window is full); dValues is derived the same way one level further in.
+  const k: IndicatorPoint[] = [];
+  const d: IndicatorPoint[] = [];
+  const kOffset = firstValidIndex + (SMOOTH - 1);
+  for (let j = 0; j < kValuesCompact.length; j++) {
+    const candleIndex = kOffset + j;
+    if (candleIndex >= candles.length) break;
+    k.push({ time: candles[candleIndex].time, value: kValuesCompact[j] });
+  }
+  // dValues is sma(kValuesCompact, SMOOTH) — indexed 1:1 with kValuesCompact
+  // (not further compacted), so dValues[j] maps to the SAME candle index as
+  // kValuesCompact[j], i.e. kOffset + j (not kOffset + (SMOOTH-1) + j — an
+  // earlier version double-counted the smoothing offset here and shifted
+  // every D point 2 candles later than it should be, caught by comparing
+  // against a brute-force reference computed independently at every index).
+  for (let j = 0; j < dValues.length; j++) {
+    const v = dValues[j];
+    const candleIndex = kOffset + j;
+    if (v == null || candleIndex >= candles.length) continue;
+    d.push({ time: candles[candleIndex].time, value: v });
+  }
+  return { k, d };
+}

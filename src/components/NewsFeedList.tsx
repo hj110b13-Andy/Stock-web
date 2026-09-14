@@ -165,7 +165,20 @@ function NewsFeedRow({ item, pinned }: { item: NewsFeedItem; pinned?: boolean })
         {item.source ?? "來源不明"}
         {item.pubDate && ` · ${formatTaipeiDateTime(item.pubDate).slice(0, -3)}`}
       </p>
-      {item.summary && <p className="mt-2 text-sm text-(--text-primary)">{item.summary}</p>}
+      {item.summary && (
+        <p className="mt-2 text-sm text-(--text-primary)">
+          {item.summary}
+          {/* Only shown when the summary was genuinely written from the
+              article's extracted body text (see newsfeed.ts summarizeBatch)
+              — never claimed for the headline-only fallback, which is a
+              plain paraphrase of the title and nothing more. */}
+          {item.summaryKind === "fulltext" && (
+            <span className="ml-1.5 align-middle text-[10px] font-normal text-(--text-muted)" title="摘要根據文章全文內容，不只是標題">
+              📄全文摘要
+            </span>
+          )}
+        </p>
+      )}
       {item.link &&
         (isInternal ? (
           <Link href={item.link} className="mt-2 inline-block text-xs font-medium text-(--accent) hover:underline">

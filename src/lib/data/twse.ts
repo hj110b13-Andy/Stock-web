@@ -1,4 +1,4 @@
-import { chunk, fetchWithTimeout } from "./cache";
+import { chunk, fetchWithTimeout, mapWithConcurrency } from "./cache";
 import type { Candle, ChartRange, Chips, Earnings, Fundamentals, MaterialAnnouncement, Quote } from "./types";
 import { findInUniverse, type UniverseEntry } from "./universe";
 
@@ -130,7 +130,19 @@ export async function fetchTwseQuotesBatch(stockNos: string[]): Promise<Map<stri
   return map;
 }
 
-const RANGE_MONTHS: Record<ChartRange, number> = { "1m": 1, "3m": 3, "6m": 6, "1y": 12 };
+const RANGE_MONTHS: Partial<Record<ChartRange, number>> = { "1m": 1, "3m": 3, "6m": 6, "1y": 12, "2y": 24, "5y": 60, "10y": 120 };
+// 5d/10d are day-COUNT ranges, not month ranges — trimmed by candle count
+// after fetching, not by a date cutoff (see fetchTwseCandles below).
+const RANGE_DAYS: Partial<Record<ChartRange, number>> = { "5d": 5, "10d": 10 };
+// A 10-year chart means 120 monthly requests to TWSE's STOCK_DAY endpoint
+// for one stock — firing all of those at once (the previous unbounded
+// Promise.all, fine for the old max of 12 months/1y) would hit TWSE with
+// 120 simultaneous connections from a single page load. Bounded instead,
+// the same mapWithConcurrency pattern already used for momentum screening's
+// per-candidate chart fetch (see index.ts's MOMENTUM_CHART_CONCURRENCY) — a
+// long-range chart is a deliberate, infrequent user action, so it taking a
+// few extra seconds is an acceptable trade for not hammering the upstream.
+const MONTH_FETCH_CONCURRENCY = 10;
 
 interface StockDayResponse {
   stat: string;
@@ -162,8 +174,27 @@ function monthsBefore(year: number, month: number, day: number, months: number):
 }
 
 export async function fetchTwseCandles(stockNo: string, range: ChartRange): Promise<Candle[]> {
-  const months = RANGE_MONTHS[range];
   const { year, month, day } = taipeiToday();
+
+  const days = RANGE_DAYS[range];
+  if (days != null) {
+    // Day-count ranges just need "enough recent months to be sure we have
+    // `days` trading days", then trimmed by count — TWSE has no trading-
+    // calendar endpoint to compute an exact date cutoff from, but 2 months
+    // comfortably covers 10 trading days even across a run of holidays.
+    const cursor = new Date(Date.UTC(year, month - 1, 1));
+    const monthParams = Array.from({ length: 2 }, () => {
+      const p = `${cursor.getUTCFullYear()}${pad(cursor.getUTCMonth() + 1)}01`;
+      cursor.setUTCMonth(cursor.getUTCMonth() - 1);
+      return p;
+    });
+    const monthly = await mapWithConcurrency(monthParams, MONTH_FETCH_CONCURRENCY, (p) => fetchMonth(stockNo, p));
+    const merged = monthly.flat().sort((a, b) => a.time.localeCompare(b.time));
+    if (merged.length === 0) throw new Error(`No TWSE candles for ${stockNo}`);
+    return merged.slice(-days);
+  }
+
+  const months = RANGE_MONTHS[range] ?? 3;
 
   // STOCK_DAY only serves whole calendar months, so asking for exactly
   // `months` of them yields a window that is short by however far into the
@@ -173,15 +204,15 @@ export async function fetchTwseCandles(stockNo: string, range: ChartRange): Prom
   // the real trailing window, so "1個月" is always about a month of data
   // regardless of what day it is.
   const cursor = new Date(Date.UTC(year, month - 1, 1));
-  const requests: Promise<Candle[]>[] = [];
-  for (let i = 0; i <= months; i++) {
-    requests.push(fetchMonth(stockNo, `${cursor.getUTCFullYear()}${pad(cursor.getUTCMonth() + 1)}01`));
+  const monthParams = Array.from({ length: months + 1 }, () => {
+    const p = `${cursor.getUTCFullYear()}${pad(cursor.getUTCMonth() + 1)}01`;
     cursor.setUTCMonth(cursor.getUTCMonth() - 1);
-  }
+    return p;
+  });
 
   const cutoffIso = monthsBefore(year, month, day, months);
 
-  const monthly = await Promise.all(requests);
+  const monthly = await mapWithConcurrency(monthParams, MONTH_FETCH_CONCURRENCY, (p) => fetchMonth(stockNo, p));
   const merged = monthly
     .flat()
     .filter((c) => c.time >= cutoffIso)

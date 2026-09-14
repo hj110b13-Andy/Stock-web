@@ -8,7 +8,24 @@ import { findInUniverse } from "./universe";
 // symbols. Swap for a licensed provider (IEX, Polygon, Alpha Vantage) in a
 // production deployment.
 
-const RANGE_PARAM: Record<ChartRange, string> = { "1m": "1mo", "3m": "3mo", "6m": "6mo", "1y": "1y" };
+// Yahoo natively supports all of these as a single request each (no
+// month-by-month chunking needed the way TW's STOCK_DAY-style endpoints
+// require — one call returns the whole range at daily granularity even for
+// 10y). "10d" has no native Yahoo range value, so it borrows "1mo" and gets
+// trimmed by candle count after fetching (see fetchUsCandles below) — "5d"
+// doesn't need that, Yahoo supports it directly.
+const RANGE_PARAM: Record<ChartRange, string> = {
+  "5d": "5d",
+  "10d": "1mo",
+  "1m": "1mo",
+  "3m": "3mo",
+  "6m": "6mo",
+  "1y": "1y",
+  "2y": "2y",
+  "5y": "5y",
+  "10y": "10y",
+};
+const RANGE_DAYS: Partial<Record<ChartRange, number>> = { "10d": 10 };
 
 const YAHOO_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
@@ -357,7 +374,8 @@ export async function fetchUsCandles(symbol: string, range: ChartRange): Promise
     });
   }
   if (candles.length === 0) throw new Error(`No Yahoo candles for ${symbol}`);
-  return candles;
+  const days = RANGE_DAYS[range];
+  return days != null ? candles.slice(-days) : candles;
 }
 
 function round2(n: number): number {

@@ -5,7 +5,17 @@ export interface Signal {
   tone: "up" | "down" | "neutral";
 }
 
-const RANGE_LABEL: Record<ChartRange, string> = { "1m": "1個月", "3m": "3個月", "6m": "6個月", "1y": "1年" };
+const RANGE_LABEL: Record<ChartRange, string> = {
+  "5d": "5日",
+  "10d": "10日",
+  "1m": "1個月",
+  "3m": "3個月",
+  "6m": "6個月",
+  "1y": "1年",
+  "2y": "2年",
+  "5y": "5年",
+  "10y": "10年",
+};
 
 function trailingAverage(closes: number[], period: number): number {
   const window = closes.slice(-period);

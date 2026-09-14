@@ -32,7 +32,7 @@ export interface ChartResponse {
   candles: Candle[];
 }
 
-export type ChartRange = "1m" | "3m" | "6m" | "1y";
+export type ChartRange = "5d" | "10d" | "1m" | "3m" | "6m" | "1y" | "2y" | "5y" | "10y";
 
 export interface SearchItem {
   symbol: string;

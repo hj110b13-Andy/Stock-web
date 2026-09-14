@@ -1,5 +1,6 @@
-import { cached, peekCached, writeCached } from "@/lib/data/cache";
+import { cached, mapWithConcurrency, peekCached, writeCached } from "@/lib/data/cache";
 import { fetchNewsFeedPool, type NewsItem } from "@/lib/data/news";
+import { fetchArticleFullText } from "@/lib/data/articleExtract";
 import { getMultiSignalStocks } from "@/lib/data";
 import { callAiProviders } from "@/lib/ai/provider";
 
@@ -14,6 +15,15 @@ export interface NewsFeedItem extends NewsItem {
    *  front). Absent only while a page's summaries haven't been requested
    *  yet or the AI call for them failed. */
   summary?: string;
+  /** Whether `summary` was written from the article's actual extracted body
+   *  text ("fulltext") or is a plain-language paraphrase of just the
+   *  headline ("headline") — see summarizeBatch in this file for why the
+   *  latter is a common, expected, and honest fallback (paywalls, bot-
+   *  blocking, slow servers) rather than a bug. Absent whenever `summary`
+   *  is (nothing to distinguish). The UI uses this to show a small "根據全文"
+   *  marker only on genuinely content-based summaries, never claiming that
+   *  distinction for a summary that's actually just a reworded title. */
+  summaryKind?: "fulltext" | "headline";
   /** "data" items are this site's own computed figures (technical signals,
    *  institutional flow), not scraped news — `link` points at our own
    *  /stock page rather than an external publisher, and the UI renders
@@ -109,50 +119,94 @@ async function selectPinned(candidates: NewsItem[]): Promise<PinnedPick[]> {
 const ITEM_SUMMARY_TTL_MS = 12 * 60 * 60_000;
 const SUMMARY_MAX_LEN = 100;
 
+// How many items' full-text extraction pipelines (each up to 3 sequential
+// HTTP calls — see fetchArticleFullText) run at once. Bounded for the same
+// reason mapWithConcurrency exists everywhere else in this codebase: two of
+// those calls always hit news.google.com regardless of which publisher the
+// article is from, so an unbounded fan-out would hammer one host, and a
+// user's page load shouldn't fire dozens of simultaneous outbound requests
+// either way.
+const FULLTEXT_FETCH_CONCURRENCY = 6;
+
+interface StoredSummary {
+  summary: string;
+  kind: "fulltext" | "headline";
+}
+
 /**
- * Fills in `summary` for regular (non-pinned) feed items — a user asked for
- * every item to have one, not just the AI-curated pinned picks, but
- * summarizing the whole pool (several hundred items, regenerated every 20
- * minutes) up front would multiply the site's AI usage far beyond what the
- * free tier can sustain. Instead this runs lazily over whatever page the
- * API route actually serves: each item's summary is cached individually by
- * its own stable id (peekCached/writeCached, not the read-or-compute
- * `cached()` — see cache.ts for why), so a page is only ever summarized
- * once across its whole lifetime (repeat views, other visitors, even later
- * pool regenerations that happen to reintroduce the same still-recent
- * article all hit the cache), and only the items actually missing a cached
- * summary trigger a single batched AI call together.
+ * Fills in `summary`/`summaryKind` for regular (non-pinned) feed items — a
+ * user asked for every item to have one, not just the AI-curated pinned
+ * picks, but summarizing the whole pool (several hundred items, regenerated
+ * every 20 minutes) up front would multiply the site's AI usage far beyond
+ * what the free tier can sustain. Instead this runs lazily over whatever
+ * page the API route actually serves: each item's summary is cached
+ * individually by its own stable id (peekCached/writeCached, not the
+ * read-or-compute `cached()` — see cache.ts for why), so a page is only ever
+ * summarized once across its whole lifetime (repeat views, other visitors,
+ * even later pool regenerations that happen to reintroduce the same
+ * still-recent article all hit the cache), and only the items actually
+ * missing a cached summary trigger real work.
+ *
+ * For those missing items, this also tries to fetch and extract each
+ * article's real body text (see lib/data/articleExtract.ts) before
+ * summarizing — a plain headline rephrase was the exact complaint this was
+ * built to fix. Extraction fails often (paywalls, bot-blocking, slow
+ * servers — see that file's measured ~80% success rate on a real sample,
+ * though real-world US-source-heavy pages will do worse given how many wire
+ * services block scrapers); whenever it does, that one item falls back to
+ * the original headline-only summarization rather than blocking the batch
+ * or fabricating content that was never actually retrieved.
  */
 export async function summarizeItems(items: NewsFeedItem[]): Promise<NewsFeedItem[]> {
   const candidates = items.filter((item) => !item.summary && item.kind === "news");
   if (candidates.length === 0) return items;
 
   const cacheKey = (id: string) => `news-item-summary:${id}`;
-  const peeked = await Promise.all(candidates.map((item) => peekCached<string>(cacheKey(item.id))));
+  const peeked = await Promise.all(candidates.map((item) => peekCached<StoredSummary>(cacheKey(item.id))));
 
   const missing: NewsFeedItem[] = [];
-  const fromCache = new Map<string, string>();
+  const fromCache = new Map<string, StoredSummary>();
   candidates.forEach((item, i) => {
     const hit = peeked[i];
     if (hit) fromCache.set(item.id, hit);
     else missing.push(item);
   });
 
-  const fromAi = missing.length > 0 ? await summarizeBatch(missing) : new Map<string, string>();
+  const fullTextById = new Map<string, string>();
+  if (missing.length > 0) {
+    const texts = await mapWithConcurrency(missing, FULLTEXT_FETCH_CONCURRENCY, (item) =>
+      item.link ? fetchArticleFullText(item.link).catch(() => null) : Promise.resolve(null)
+    );
+    missing.forEach((item, i) => {
+      const text = texts[i];
+      if (text) fullTextById.set(item.id, text);
+    });
+  }
+
+  const fromAi = missing.length > 0 ? await summarizeBatch(missing, fullTextById) : new Map<string, StoredSummary>();
   await Promise.all(
-    Array.from(fromAi.entries()).map(([id, summary]) => writeCached(cacheKey(id), summary, ITEM_SUMMARY_TTL_MS))
+    Array.from(fromAi.entries()).map(([id, stored]) => writeCached(cacheKey(id), stored, ITEM_SUMMARY_TTL_MS))
   );
 
   return items.map((item) => {
-    const summary = item.summary ?? fromCache.get(item.id) ?? fromAi.get(item.id);
-    return summary ? { ...item, summary } : item;
+    const stored = fromCache.get(item.id) ?? fromAi.get(item.id);
+    if (item.summary) return item;
+    return stored ? { ...item, summary: stored.summary, summaryKind: stored.kind } : item;
   });
 }
 
-async function summarizeBatch(items: NewsFeedItem[]): Promise<Map<string, string>> {
-  const listText = items.map((item, i) => `${i}. ${item.title}${item.source ? `（${item.source}）` : ""}`).join("\n");
+async function summarizeBatch(items: NewsFeedItem[], fullTextById: Map<string, string>): Promise<Map<string, StoredSummary>> {
+  const listText = items
+    .map((item, i) => {
+      const fullText = fullTextById.get(item.id);
+      const header = `${i}. ${item.title}${item.source ? `（${item.source}）` : ""}`;
+      return fullText ? `${header}\n【全文摘錄】\n${fullText}` : header;
+    })
+    .join("\n\n");
   const system = [
-    "你是財經新聞編輯，針對下面清單裡的每一則新聞標題，用繁體中文寫一句話（40字以內）白話說明這則新聞大概在講什麼，讓完全沒有股票背景的人也能一眼看懂重點，不要只是換句話重複標題本身，也不要加上投資建議。",
+    "你是財經新聞編輯，針對下面清單裡的每一則新聞，用繁體中文寫一句話（40字以內）白話說明重點，讓完全沒有股票背景的人也能一眼看懂，不要加上投資建議。",
+    "清單裡每一則如果附有「【全文摘錄】」段落，那是這篇新聞實際的內文開頭，請根據這段實際內容寫摘要（可以引用內文提到的具體數字、原因、影響等實質細節），不要只是換句話重複標題。",
+    "如果某一則沒有附「【全文摘錄】」（只有標題），才依標題本身合理描述大意，這種情況本來就只能做到換句話說明標題，不用假裝有更多資訊。",
     '只能回傳一個 JSON 陣列本身，每個元素是 {"index": 編號, "summary": "重點摘要"}，順序或數量不用跟輸入一致，每一則清單裡的新聞都要有對應的一筆，不要有其他文字、說明或 markdown code block 標記。',
   ].join("\n");
 
@@ -165,7 +219,7 @@ async function summarizeBatch(items: NewsFeedItem[]): Promise<Map<string, string
     if (!match) return new Map();
     const parsed = JSON.parse(match[0]);
     if (!Array.isArray(parsed)) return new Map();
-    const map = new Map<string, string>();
+    const map = new Map<string, StoredSummary>();
     for (const entry of parsed) {
       if (
         entry &&
@@ -176,7 +230,11 @@ async function summarizeBatch(items: NewsFeedItem[]): Promise<Map<string, string
         typeof entry.summary === "string" &&
         entry.summary.trim().length > 0
       ) {
-        map.set(items[entry.index].id, entry.summary.trim().slice(0, SUMMARY_MAX_LEN));
+        const item = items[entry.index];
+        map.set(item.id, {
+          summary: entry.summary.trim().slice(0, SUMMARY_MAX_LEN),
+          kind: fullTextById.has(item.id) ? "fulltext" : "headline",
+        });
       }
     }
     return map;
