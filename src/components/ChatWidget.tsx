@@ -109,7 +109,11 @@ export default function ChatWidget() {
                 {getWatchlist().length > 0 && (
                   <button
                     onClick={() => send("幫我分析一下我關注清單裡的每一檔股票", getWatchlist())}
-                    className="block w-full rounded-md border border-(--accent) bg-(--accent-soft) px-3 py-2 text-left text-xs font-medium text-(--accent) hover:opacity-90"
+                    // text-(--accent) on bg-(--accent-soft) measured 3.34:1 light /
+                    // 2.23:1 dark — both under WCAG AA's 4.5:1 for text. text-primary
+                    // on the same background clears 14.87:1 / 8.10:1 while the
+                    // border+background still read as the same accent-tinted button.
+                    className="block w-full rounded-md border border-(--accent) bg-(--accent-soft) px-3 py-2 text-left text-xs font-medium text-(--text-primary) hover:opacity-90"
                   >
                     📋 分析我的關注清單（{getWatchlist().length} 檔）
                   </button>

@@ -86,7 +86,7 @@ export async function callAiProviders(
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error("[ai] Gemini call failed:", message);
-      failures.push(`Gemini 呼叫失敗：${message.slice(0, 300)}`);
+      failures.push(`Gemini 呼叫失敗：${humanizeProviderError(message)}`);
     }
   }
 
@@ -123,9 +123,25 @@ export async function callAiProviders(
     } catch (err) {
       const errMessage = err instanceof Error ? err.message : String(err);
       console.error("[ai] Anthropic call failed:", errMessage);
-      failures.push(`Claude 呼叫失敗：${errMessage.slice(0, 300)}`);
+      failures.push(`Claude 呼叫失敗：${humanizeProviderError(errMessage)}`);
     }
   }
 
   return { answer: "", usedAi: false, failureReason: failures.join(" / ") };
+}
+
+/**
+ * The raw error from a failed provider call is useful in server logs (still
+ * logged in full via console.error above) but not to an end user — an Opus
+ * QA pass found the canned fallback answer showing the complete raw upstream
+ * error, e.g. Gemini's full 429 JSON body ("You exceeded your current
+ * quota, please check your plan and billing details..."). Common,
+ * recognizable failure shapes get a short plain-language substitute instead;
+ * anything else still gets shown (truncated) since some detail is better
+ * than none when it's not a well-known "quota/rate limit" case.
+ */
+function humanizeProviderError(message: string): string {
+  if (/HTTP 429|rate.?limit|quota/i.test(message)) return "AI 服務目前額度已用完，請稍後再試";
+  if (/AbortError|operation was aborted|timed? ?out/i.test(message)) return "AI 回應逾時";
+  return message.slice(0, 300);
 }
