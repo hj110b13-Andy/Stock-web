@@ -47,7 +47,7 @@ export default function StockTable({ items, emptyLabel }: { items: SearchItem[];
                 {formatVolume(item.volume, item.market)}
                 {item.volumeTrend !== "neutral" && (
                   <span
-                    className={`ml-1.5 inline-block rounded-full px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap ${
+                    className={`ml-1.5 inline-block rounded-full px-1.5 py-0.5 text-[12px] font-medium whitespace-nowrap ${
                       item.volumeTrend === "buy-leaning" ? "bg-(--price-up)/10 text-(--price-up)" : "bg-(--price-down)/10 text-(--price-down)"
                     }`}
                     title={`成交量約為近20個交易日均量的 ${item.volumeRatio?.toFixed(1)} 倍，且股價${

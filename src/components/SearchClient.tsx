@@ -276,8 +276,8 @@ function VolumeTrendMultiSelect({
       </summary>
       <div className="absolute right-0 z-20 mt-1 w-64 rounded-md border border-(--gridline) bg-(--surface-1) p-2 shadow-lg">
         <div className="mb-1 flex items-center justify-between">
-          <span className="text-[11px] text-(--text-muted)">多選；依「今日量 vs 自身近期均量」推論</span>
-          <button onClick={onClear} className="text-[11px] text-(--accent) hover:underline">
+          <span className="text-[13px] text-(--text-muted)">多選；依「今日量 vs 自身近期均量」推論</span>
+          <button onClick={onClear} className="text-[13px] text-(--accent) hover:underline">
             清除
           </button>
         </div>
@@ -287,7 +287,7 @@ function VolumeTrendMultiSelect({
             {opt.label}
           </label>
         ))}
-        <p className="mt-1 border-t border-(--gridline) pt-1 text-[11px] text-(--text-muted)">
+        <p className="mt-1 border-t border-(--gridline) pt-1 text-[13px] text-(--text-muted)">
           這是傳統技術分析的價量關係推論（價漲/跌量增），不是真實的委買委賣單成交量統計。
         </p>
       </div>
@@ -313,8 +313,8 @@ function SectorMultiSelect({
       </summary>
       <div className="absolute right-0 z-20 mt-1 max-h-64 w-48 overflow-y-auto rounded-md border border-(--gridline) bg-(--surface-1) p-2 shadow-lg">
         <div className="mb-1 flex items-center justify-between">
-          <span className="text-[11px] text-(--text-muted)">多選產業</span>
-          <button onClick={onClear} className="text-[11px] text-(--accent) hover:underline">
+          <span className="text-[13px] text-(--text-muted)">多選產業</span>
+          <button onClick={onClear} className="text-[13px] text-(--accent) hover:underline">
             清除
           </button>
         </div>
