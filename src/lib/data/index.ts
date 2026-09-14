@@ -276,11 +276,18 @@ export async function getMaterialAnnouncements(symbolInput: string, marketHint?:
   }
 }
 
+// "美股四大指數" as this site's Taiwanese audience means it: 道瓊/S&P 500/
+// 那斯達克 plus 費城半導體指數（SOX）— the semiconductor-heavy Philadelphia
+// index is the conventional 4th "major" one watched alongside the other
+// three specifically in Taiwan financial media, given how closely TW's own
+// market (TSMC and the broader chip supply chain) tracks it; it is not one
+// of the "big 3" in a purely US context, which is why it was missing here.
 const INDEX_DEFS: Array<{ symbol: string; name: string; market: Market; misCode?: string }> = [
   { symbol: "TAIEX", name: "台股加權指數", market: "TW", misCode: "t00" },
   { symbol: "^DJI", name: "道瓊工業指數", market: "US" },
   { symbol: "^GSPC", name: "S&P 500", market: "US" },
   { symbol: "^IXIC", name: "那斯達克指數", market: "US" },
+  { symbol: "^SOX", name: "費城半導體指數", market: "US" },
 ];
 
 /**

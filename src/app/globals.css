@@ -121,12 +121,22 @@ html {
   font-family: var(--font-sans);
   /* The user asked for the whole site's text to read clearly at a glance,
      including for older readers — Tailwind's text/spacing scale is rem-
-     based, so bumping the root size (16px -> 18px) scales every text-xs/
-     text-sm/text-base/etc. utility AND every rem-based padding/gap
-     proportionally site-wide, instead of needing to hand-edit every
-     component's className. A few fixed-px (text-[Npx]) instances that
-     don't use the rem scale are bumped individually where they occur. */
-  font-size: 112.5%;
+     based, so bumping the root size scales every text-xs/text-sm/text-base/
+     etc. utility AND every rem-based padding/gap proportionally site-wide,
+     instead of needing to hand-edit every component's className. A few
+     fixed-px (text-[Npx]) instances that don't use the rem scale are
+     bumped individually where they occur.
+     First tried 112.5% (16px -> 18px), but that also scaled every rem-sized
+     padding/gap/fixed-dimension proportionally larger — which is usually
+     the point, but it grew the floating chat widget's own box (also
+     rem-sized at the time) enough to clip off-screen on a modest browser
+     window, and generally left noticeably less content visible per screen
+     before needing to scroll. Backed off to 106.25% (16px -> 17px): still
+     a real, visible increase over the original, just without those side
+     effects. The chat widget's own box is now pinned to a fixed px size
+     specifically so it no longer grows/shrinks with this value at all (see
+     ChatWidget.tsx). */
+  font-size: 106.25%;
 }
 
 body {
@@ -138,6 +148,20 @@ body {
      density. Components can still override with their own leading-* utility
      where a tighter fit is genuinely needed (e.g. a compact table row). */
   line-height: 1.6;
+  /* The user reported the site looking "too thin" specifically when
+     projected onto a TV/large display — a real, separate axis from plain
+     font SIZE (a bigger-but-still-thin stroke can still look faint at a
+     distance/on a display with soft anti-aliasing). 500 is a real step up
+     from the browser default of 400 on fonts that support it (system-ui,
+     -apple-system, PingFang TC, Segoe UI all do) — those without an exact
+     500 weight fall back to their closest available one at worst, no worse
+     than today. `antialiased`/optimizeLegibility are the standard pairing
+     for keeping that heavier weight crisp rather than blurry at various
+     zoom levels/display densities. */
+  font-weight: 500;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 .tabular-nums {

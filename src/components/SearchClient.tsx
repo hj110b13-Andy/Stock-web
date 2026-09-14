@@ -288,7 +288,7 @@ function VolumeTrendMultiSelect({
           </label>
         ))}
         <p className="mt-1 border-t border-(--gridline) pt-1 text-[13px] text-(--text-muted)">
-          這是傳統技術分析的價量關係推論（價漲/跌量增），不是真實的委買委賣單成交量統計。
+          這是傳統技術分析的價量關係推論（價漲/跌量增），不是真實的委買委賣單成交量統計。這項功能剛上線，均量資料要累積約5個交易日才會準確，這幾天內看到大量股票顯示「量能不明顯」是正常現象、不是故障，之後會逐漸準確。
         </p>
       </div>
     </details>

@@ -61,7 +61,16 @@ export default function ChatWidget() {
   return (
     <div className="fixed bottom-4 right-4 z-50">
       {open && (
-        <div className="mb-3 flex h-[28rem] w-[22rem] max-w-[90vw] flex-col overflow-hidden rounded-xl border border-(--gridline) bg-(--surface-1) shadow-xl">
+        // Fixed px, not rem: this box's own size is deliberately independent
+        // of the site-wide root font-size (globals.css) — sizing it in rem
+        // meant a global text-size increase silently grew this floating
+        // panel too (448px -> 504px tall), which could push it past the top
+        // of a modest browser window since it's anchored to the bottom
+        // (fixed bottom-4 right-4) with nothing to shrink it back down,
+        // showing as the widget being cut off / not fully visible. A
+        // max-height safety clamp on top of the fixed size means this can't
+        // recur even if the root font-size changes again later.
+        <div className="mb-3 flex h-[448px] max-h-[calc(100vh-6rem)] w-[352px] max-w-[90vw] flex-col overflow-hidden rounded-xl border border-(--gridline) bg-(--surface-1) shadow-xl">
           <div className="flex items-center justify-between border-b border-(--gridline) px-4 py-3">
             <div>
               <p className="font-semibold text-sm">AI 股票問答</p>
