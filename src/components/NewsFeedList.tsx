@@ -173,7 +173,7 @@ function NewsFeedRow({ item, pinned }: { item: NewsFeedItem; pinned?: boolean })
               — never claimed for the headline-only fallback, which is a
               plain paraphrase of the title and nothing more. */}
           {item.summaryKind === "fulltext" && (
-            <span className="ml-1.5 align-middle text-[10px] font-normal text-(--text-muted)" title="摘要根據文章全文內容，不只是標題">
+            <span className="ml-1.5 align-middle text-[12px] font-normal text-(--text-muted)" title="摘要根據文章全文內容，不只是標題">
               📄全文摘要
             </span>
           )}
