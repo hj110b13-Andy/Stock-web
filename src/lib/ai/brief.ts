@@ -21,16 +21,22 @@ export interface DailyBrief {
 // between. A user reported the displayed update time looking stale for
 // exactly this reason.
 //
-// Switched to a plain rolling TTL (like actionBrief.ts, just longer — this
-// prompt is bigger/more expensive, ~550-800 words vs 200-350, so refreshing
-// every 20 minutes the same way would be wasteful) so the content actually
-// catches up with the day as it happens: pre-market, after the TW close,
-// and again after the US close all naturally get their own regeneration
-// instead of one frozen morning snapshot. warm-cache's cron (every ~5 min,
-// see .github/workflows/warm-cache.yml) now also calls getDailyBrief(), so
-// this still regenerates in the background right after the TTL lapses
-// rather than making whoever visits next wait on a live AI call.
-const BRIEF_TTL_MS = 3 * 60 * 60_000;
+// Switched to a plain rolling TTL (like actionBrief.ts) so the content
+// actually catches up with the day as it happens instead of one frozen
+// morning snapshot. First set to 3 hours (this prompt is bigger/more
+// expensive than actionBrief's, ~550-800 words vs 200-350, so refreshing
+// every 20 minutes felt wasteful) — then tightened to the site-wide 5-min
+// standard the user asked for across every cache on the site (fundamentals,
+// chips, momentum screens, this brief, action brief, news feed — see
+// FUNDAMENTALS_TTL_MS in lib/data/index.ts for the fuller reasoning). This
+// does mean noticeably more AI calls per day than the 3h version; if that
+// ever causes rate-limit fallbacks to show up more often, the fix is to
+// raise this back up, not to special-case it back to a stale cadence.
+// warm-cache's cron (every ~5 min, see .github/workflows/warm-cache.yml)
+// calls getDailyBrief() too, so this still regenerates in the background
+// right after the TTL lapses rather than making whoever visits next wait on
+// a live AI call.
+const BRIEF_TTL_MS = 5 * 60_000;
 const BRIEF_CACHE_KEY = "daily-brief:v2"; // v2: dropped the per-date key when this moved to a rolling TTL
 
 function listStocks(items: Array<{ name: string; symbol: string; changePercent: number }>): string {

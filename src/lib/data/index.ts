@@ -170,7 +170,14 @@ async function mergeTwMaps<V>(
   return new Map([...twse, ...tpex]);
 }
 
-const FUNDAMENTALS_TTL_MS = 60 * 60_000; // fundamentals don't move intraday; refresh hourly
+// Previously 1 hour ("fundamentals don't move intraday") — shortened to
+// match the site-wide "everything should feel current within ~5 minutes"
+// standard the user asked for after finding several caches (daily brief,
+// action brief, news feed) sitting on much longer refresh windows. The
+// underlying data source itself still only updates once a day, so a 5-min
+// TTL doesn't create *new* freshness here — it just keeps this in step with
+// every other cache on the site rather than being the stale outlier.
+const FUNDAMENTALS_TTL_MS = 5 * 60_000;
 
 /**
  * Returns null when unavailable — fabricating a P/E ratio or dividend
@@ -192,7 +199,7 @@ export async function getFundamentals(symbolInput: string, marketHint?: Market):
   }
 }
 
-const EARNINGS_TTL_MS = 60 * 60_000; // same cadence as fundamentals — this doesn't move intraday either
+const EARNINGS_TTL_MS = 5 * 60_000; // same site-wide 5-min standard as FUNDAMENTALS_TTL_MS above
 
 /**
  * Returns null when unavailable — a bank/insurer isn't in TWSE's general
@@ -223,7 +230,7 @@ export async function getEarnings(symbolInput: string, marketHint?: Market): Pro
   }
 }
 
-const CHIPS_TTL_MS = 30 * 60_000; // 三大法人/融資融券資料收盤後才會整批更新，半小時的快取視窗足夠
+const CHIPS_TTL_MS = 5 * 60_000; // 全站統一 5 分鐘更新標準，見 FUNDAMENTALS_TTL_MS 說明
 
 /**
  * TW only（籌碼面：三大法人買賣超＋融資融券餘額）— 美股沒有對應的公開資料
@@ -250,7 +257,7 @@ export async function getChips(symbolInput: string, marketHint?: Market): Promis
   }
 }
 
-const ANNOUNCEMENTS_TTL_MS = 30 * 60_000;
+const ANNOUNCEMENTS_TTL_MS = 5 * 60_000; // 全站統一 5 分鐘更新標準，見 FUNDAMENTALS_TTL_MS 說明
 
 /** TW only — 最近一個交易日的重大訊息公告；大多數股票當天沒有公告是常態，回傳空陣列而非 null。 */
 export async function getMaterialAnnouncements(symbolInput: string, marketHint?: Market): Promise<MaterialAnnouncement[]> {
@@ -476,16 +483,16 @@ export interface MomentumItem extends SearchItem {
   signals: Signal[];
 }
 
-// Doubled from 5 minutes: the per-candidate chart fetch below is bound by
-// round-trip latency to TWSE/Yahoo from Vercel's servers, which stays a
-// multi-second cost no matter how much concurrency or candidate-trimming is
-// applied on top of it (see the two constants below — trimming candidates
-// 25→15 only shaved ~18% off a local benchmark, confirming the wait is
-// mostly network RTT, not local compute). A longer cache window doesn't
-// make any single computation faster, but it does mean far fewer visits
-// actually pay that cost — for a low-traffic personal site, technical
-// signals being up to 10 minutes stale is an easy trade for that.
-const MOMENTUM_TTL_MS = 10 * 60_000;
+// Was doubled to 10 minutes at one point to reduce how often this
+// genuinely expensive screen (a chart fetch per candidate stock) has to
+// recompute — brought back down to the site-wide 5-min standard (see
+// FUNDAMENTALS_TTL_MS) since real visitors were never the ones paying that
+// cost anyway: warm-cache's cron (.github/workflows/warm-cache.yml) already
+// recomputes this in the background on its own ~5-min schedule regardless
+// of whether anyone is actively visiting, so halving the TTL mainly means
+// the cron's own background work runs twice as often, not that users wait
+// longer for anything.
+const MOMENTUM_TTL_MS = 5 * 60_000;
 // Computing a signal requires a chart fetch per candidate stock, so the
 // candidate pool is capped to the biggest movers by |change%| before doing
 // that work — a board that only ever displays the top ~10 results doesn't

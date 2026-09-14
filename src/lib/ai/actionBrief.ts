@@ -10,13 +10,14 @@ export interface ActionBrief {
   generatedAt: string;
 }
 
-// This is "right now" advice, not a once-a-day artifact like the daily brief
-// (which is date-keyed and lives ~25h) — a plain rolling TTL keeps it from
-// going stale mid-session while still sharing one computed result across
-// everyone visiting within the same 20-minute window. 20 minutes also matches
-// getNewsFeed's own cache cadence, so most calls here just read its existing
-// cache rather than recomputing it.
-const ACTION_BRIEF_TTL_MS = 20 * 60_000;
+// This is "right now" advice — a plain rolling TTL keeps it from going
+// stale mid-session while still sharing one computed result across everyone
+// visiting within the same window. Tightened from 20 minutes to the
+// site-wide 5-min standard applied across every cache on the site (see
+// FUNDAMENTALS_TTL_MS in lib/data/index.ts) — also now matches
+// getNewsFeed's own 5-min cadence again, so most calls here still just read
+// its existing cache rather than recomputing it.
+const ACTION_BRIEF_TTL_MS = 5 * 60_000;
 
 // Chip data is only pulled for a handful of the day's biggest TW momentum
 // names, same reasoning/limit as brief.ts's buildTwChipsSummary — this is

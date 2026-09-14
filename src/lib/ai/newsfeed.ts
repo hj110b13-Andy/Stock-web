@@ -32,7 +32,7 @@ export interface NewsFeed {
   generatedAt: string;
 }
 
-const FEED_TTL_MS = 20 * 60_000; // matches fetchNewsFeedPool's own per-query news.ts cache cadence
+const FEED_TTL_MS = 5 * 60_000; // matches fetchNewsFeedPool's own per-query news.ts cache cadence and the site-wide 5-min standard (see FUNDAMENTALS_TTL_MS in lib/data/index.ts)
 const PIN_CANDIDATE_COUNT = 60; // how many of the freshest pool items the AI even considers
 const MAX_PINNED = 8;
 // How many of each market's technical-signal stocks become "data cards" —
@@ -98,7 +98,15 @@ async function selectPinned(candidates: NewsItem[]): Promise<PinnedPick[]> {
   }
 }
 
-const ITEM_SUMMARY_TTL_MS = 12 * 60 * 60_000; // a headline's gist doesn't change; cache generously across pool regenerations
+// Deliberately NOT lowered to the site-wide 5-min refresh standard (see
+// FUNDAMENTALS_TTL_MS in lib/data/index.ts): this caches an AI gloss of one
+// specific, already-published headline's TEXT, which doesn't change once
+// written — re-running the same summarization prompt on the same unchanged
+// input 5 minutes later would just burn an AI call to get the same answer
+// back. FEED_TTL_MS above (now 5 min) is what actually controls how soon a
+// genuinely NEW headline shows up at all; this only governs how long an
+// individual item's summary, once computed, is reused across that.
+const ITEM_SUMMARY_TTL_MS = 12 * 60 * 60_000;
 const SUMMARY_MAX_LEN = 100;
 
 /**

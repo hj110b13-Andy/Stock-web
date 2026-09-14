@@ -11,7 +11,7 @@ export interface NewsItem {
   link?: string;
 }
 
-const NEWS_TTL_MS = 20 * 60_000; // headlines don't need second-by-second freshness
+const NEWS_TTL_MS = 5 * 60_000; // site-wide 5-min refresh standard (see FUNDAMENTALS_TTL_MS in lib/data/index.ts) so new headlines surface promptly
 
 /** Which Google News regional edition to search — each surfaces a different
  *  set of outlets (zh-TW pulls in Chinese-language financial media, en-US

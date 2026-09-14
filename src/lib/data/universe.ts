@@ -272,7 +272,18 @@ export const US_UNIVERSE: UniverseEntry[] = [
   { symbol: "FCX", market: "US", name: "Freeport-McMoRan Inc.", sector: "Materials", currency: "USD" },
 ];
 
-const TW_UNIVERSE_TTL_MS = 24 * 60 * 60_000; // official company list changes rarely; refresh once a day
+// Deliberately NOT lowered to the site-wide 5-min refresh standard applied
+// elsewhere (fundamentals/chips/momentum/briefs/news — see
+// FUNDAMENTALS_TTL_MS in lib/data/index.ts): this caches WHICH companies
+// exist and their official industry classification, not any figure that
+// actually moves during a trading day. A company doesn't newly list or
+// change industry category between one 5-minute window and the next, so
+// refetching this ~1700-company combined TWSE+TPEx listing every 5 minutes
+// would be 288 refetches/day of something that changes maybe a few times a
+// year, for zero real freshness gain. TW_UNIVERSE_DEGRADED_TTL_MS below is
+// the one exception that already refreshes fast — that's for retrying a
+// FAILED fetch quickly, not for freshness of a successful one.
+const TW_UNIVERSE_TTL_MS = 24 * 60 * 60_000;
 // Bounds how many TW symbols downstream code batch-fetches quotes/charts
 // for at once (search results, rankings, momentum screening) — TWSE lists
 // roughly 1000 companies, and rankings/momentum screens need to stay
