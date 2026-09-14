@@ -41,6 +41,11 @@ import type { TaifexFuturesQuote } from "./types";
 
 const QUOTE_LIST_URL = "https://mis.taifex.com.tw/futures/api/getQuoteList";
 
+/** 夜盤（盤後交易時段）開盤時間（台北時間 15:00）。只用來判斷報價時間有沒有
+ *  跨過午夜（見 buildAsOf），不用來判斷交易中/已收盤——那個一律以交易所回傳的
+ *  Status 為準，見檔案開頭說明。 */
+const NIGHT_SESSION_START_HOUR = 15;
+
 // 固定查夜盤（盤後交易時段）。日盤的台股大盤已經有加權指數（twse.ts 的 t00）涵蓋，
 // 這個函式的用途明確是「現貨收盤後到隔天開盤前」這段資訊真空期的市場情緒指標，
 // 不需要另外查日盤這組。
@@ -85,6 +90,42 @@ function toNumber(raw: string | undefined): number | null {
 }
 
 /**
+ * 把交易所回傳的 CDate（日期）+ CTime（時間）組成給人看的資料時間。
+ *
+ * 不能直接把兩個欄位拼起來：夜盤（盤後交易時段）是 CDate 當天 15:00 開始、到
+ * 「次日」05:00 結束，但交易所回傳的 CDate 整段 session 都固定是這個 session 的
+ * 起始交易日，跨過午夜之後也不會換日。所以 00:00~05:00 這段時間的報價，CDate
+ * 仍然是前一天——直接拼接會得到一個倒退整整 24 小時的時間戳（2026-09-15 00:01
+ * 實測顯示成「2026/09/14 00:01:00」，畫面上看起來像是一整天沒更新的壞資料，
+ * 這一行同時也會餵給 AI 問答當成「資料時間」講出來）。
+ *
+ * 判斷方式：夜盤的報價時間只會落在 15:00~23:59 或 00:00~05:00 兩段，中間
+ * 05:00~15:00 不會有夜盤報價，所以「時間小於 15:00」就代表已經跨過午夜，
+ * 日曆日期要補 +1 天。這個函式只服務固定查夜盤的 fetchTaifexNightFutures，
+ * 不適用於日盤（日盤 08:45~13:45 不跨日，也沒有這個問題）。
+ */
+function buildAsOf(dateStr: string, timeStr: string, hasTime: boolean): string {
+  if (dateStr.length !== 8) return "";
+  let year = Number(dateStr.slice(0, 4));
+  let month = Number(dateStr.slice(4, 6));
+  let day = Number(dateStr.slice(6, 8));
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return "";
+
+  if (hasTime && Number(timeStr.slice(0, 2)) < NIGHT_SESSION_START_HOUR) {
+    // 用 UTC 日期運算純粹是為了借它處理跨月/跨年/閏年的進位，跟時區無關
+    // （這裡的 Y/M/D 自始至終都是台北的日曆日期）。
+    const nextDay = new Date(Date.UTC(year, month - 1, day + 1));
+    year = nextDay.getUTCFullYear();
+    month = nextDay.getUTCMonth() + 1;
+    day = nextDay.getUTCDate();
+  }
+
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const datePart = `${year}/${pad(month)}/${pad(day)}`;
+  return hasTime ? `${datePart} ${timeStr.slice(0, 2)}:${timeStr.slice(2, 4)}:${timeStr.slice(4, 6)}` : datePart;
+}
+
+/**
  * 近月台指期（TX，大台指）夜盤報價。找不到近月合約、或近月合約還沒有任何成交
  * （例如夜盤剛開盤的頭幾秒，CLastPrice 是空字串）一律回傳 null——絕不用參考價
  * 或其他數字頂替，比照全站「抓不到就顯示資料暫缺」的原則。
@@ -122,12 +163,8 @@ export async function fetchTaifexNightFutures(): Promise<TaifexFuturesQuote | nu
 
   const dateStr = nearMonth.CDate ?? "";
   const timeStr = (nearMonth.CTime ?? "").padStart(6, "0");
-  const hasTime = timeStr !== "000000" && nearMonth.CTime;
-  const asOf =
-    dateStr.length === 8
-      ? `${dateStr.slice(0, 4)}/${dateStr.slice(4, 6)}/${dateStr.slice(6, 8)}` +
-        (hasTime ? ` ${timeStr.slice(0, 2)}:${timeStr.slice(2, 4)}:${timeStr.slice(4, 6)}` : "")
-      : "";
+  const hasTime = timeStr !== "000000" && Boolean(nearMonth.CTime);
+  const asOf = buildAsOf(dateStr, timeStr, hasTime);
 
   return {
     contractLabel,
@@ -150,6 +187,14 @@ export function describeTaifexNightFutures(quote: TaifexFuturesQuote | null): st
   if (!quote) return "台指期夜盤：目前無法取得資料";
   const statusText =
     quote.status === "trading" ? "夜盤交易中" : quote.status === "closed" ? "最近一次夜盤收盤" : "目前為特殊狀態（試撮/暫停等）";
-  const sign = quote.change >= 0 ? "+" : "";
-  return `${quote.contractLabel}（${statusText}，資料時間 ${quote.asOf || "未知"}）：${quote.price}點（${sign}${quote.changePercent}%）`;
+  // 每個數字都要自帶「這是什麼」的標籤（最新價／漲跌）。原本只寫成
+  // 「45562點（-0.47%）」，沒有把漲跌點數放進來，實測 AI 問答想講「下跌幾點」
+  // 時無數可用，就抓了最新價去填，答出「下跌45562點，跌幅0.47%」這種自相
+  // 矛盾的句子（45562 是價格，不是跌幅點數；實際只跌 215 點）。把漲跌點數
+  // 一起給、並把兩個數字的角色寫清楚，才不會被誤用。
+  const sign = quote.change > 0 ? "+" : "";
+  return (
+    `${quote.contractLabel}（${statusText}，資料時間 ${quote.asOf || "未知"}）：` +
+    `最新價 ${quote.price} 點，較昨日結算價漲跌 ${sign}${quote.change} 點（${sign}${quote.changePercent}%）`
+  );
 }
