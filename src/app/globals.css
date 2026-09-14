@@ -94,8 +94,20 @@
   --price-down: #00b300;
 }
 
-* {
-  border-color: var(--border);
+/* Tailwind v4 emits utility classes inside `@layer utilities`, and
+   unlayered CSS always wins over ANY `@layer`-wrapped rule regardless of
+   specificity or source order — so writing this reset unlayered silently
+   overrode every `border-(--accent)`/`border-(--gridline)`/etc. utility
+   class site-wide (confirmed via computed styles: a `border-(--accent)`
+   element rendered `rgba(255,255,255,0.1)`, this rule's --border value,
+   instead of the intended accent color). `@layer base` sits below
+   `utilities` in Tailwind v4's layer order, so wrapping it here lets
+   utility classes override it the way a default-border reset is supposed
+   to work. */
+@layer base {
+  * {
+    border-color: var(--border);
+  }
 }
 
 html {
