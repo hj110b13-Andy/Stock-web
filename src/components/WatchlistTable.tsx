@@ -41,8 +41,20 @@ export default function WatchlistTable({ items, emptyLabel }: { items: HoldingIt
           </span>
         </div>
       )}
+      {/* On a narrow (mobile) screen this table is wider than the viewport —
+          overflow-x-auto below makes it scrollable, but a plain scrollable
+          <table> with no visual cue looks identical to a fully-visible one,
+          so most people never discover the swipe. A user reported being
+          unable to clear a holding's 平均成本 at all; the field was never
+          broken, it was just off-screen with nothing telling them to swipe
+          to reach it (persistent-成本欄位不可見, silent-cut-off-columns).
+          A persistent hint (not scroll-triggered — those get missed on a
+          quick glance) makes the swipe discoverable without redesigning the
+          table into a stacked mobile layout. sm: hides it once the table
+          actually fits without scrolling. */}
+      <p className="text-[11px] text-(--text-muted) sm:hidden">← 可左右滑動查看持有股數／平均成本／損益 →</p>
       <div className="overflow-x-auto">
-        <table className="w-full text-sm">
+        <table className="w-full min-w-[560px] text-sm">
           <thead>
             <tr className="border-b border-(--gridline) text-left text-(--text-muted)">
               <th className="w-8" />
