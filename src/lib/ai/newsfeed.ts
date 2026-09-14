@@ -156,6 +156,36 @@ function normalizeTitle(value: string): string {
 // string's leading 12 characters because summarizeBatch only asks the model to
 // echo back a prefix, and publishers' own titles often carry trailing section
 // names the model drops.
+/**
+ * Reads the model's JSON array of summary entries, tolerating a response that
+ * was cut off mid-array. A truncated reply has no closing bracket, so a plain
+ * JSON.parse of the whole thing throws and every summary in the batch is lost
+ * — including the ones the model had already finished writing. Falling back to
+ * scanning individual {...} objects keeps those, and drops only the partial
+ * one at the end.
+ */
+function parseSummaryEntries(answer: string): Array<Record<string, unknown>> {
+  const whole = answer.match(/\[[\s\S]*\]/);
+  if (whole) {
+    try {
+      const parsed = JSON.parse(whole[0]);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      // fall through to the per-object scan below
+    }
+  }
+  const out: Array<Record<string, unknown>> = [];
+  for (const m of answer.matchAll(/\{[^{}]*\}/g)) {
+    try {
+      const obj = JSON.parse(m[0]);
+      if (obj && typeof obj === "object" && !Array.isArray(obj)) out.push(obj);
+    } catch {
+      // ignore this fragment; a malformed one shouldn't discard the rest
+    }
+  }
+  return out;
+}
+
 function titlesMatch(a: string, b: string): boolean {
   const x = normalizeTitle(a);
   const y = normalizeTitle(b);
@@ -259,24 +289,31 @@ async function summarizeBatch(items: NewsFeedItem[], fullTextById: Map<string, s
   ].join("\n");
 
   try {
+    // Budget per item, measured against what this actually emits: an index, a
+    // 12-character echoed title and a ~40-character Chinese summary, which in
+    // CJK runs well over one token per character. The previous 60/item was
+    // already near the edge for summary-only output; adding the title field
+    // pushed a real 10-item page over it, and a response truncated at
+    // MAX_TOKENS ends mid-JSON, fails to parse, and silently drops the whole
+    // batch to zero summaries (observed in production right after the title
+    // check shipped). The floor matters as much as the multiplier — a short
+    // batch still has to fit entire objects.
     const result = await callAiProviders(system, [{ role: "user", content: `新聞清單：\n${listText}` }], {
-      maxOutputTokens: Math.max(600, items.length * 60),
+      maxOutputTokens: Math.max(1200, items.length * 130),
     });
     if (!result.usedAi) return new Map();
-    const match = result.answer.match(/\[[\s\S]*\]/);
-    if (!match) return new Map();
-    const parsed = JSON.parse(match[0]);
-    if (!Array.isArray(parsed)) return new Map();
+    const parsed = parseSummaryEntries(result.answer);
+    if (!parsed.length) return new Map();
     const map = new Map<string, StoredSummary>();
     for (const entry of parsed) {
+      const rawIndex = entry.index;
+      const rawSummary = entry.summary;
       if (
-        entry &&
-        typeof entry === "object" &&
-        Number.isInteger(entry.index) &&
-        entry.index >= 0 &&
-        entry.index < items.length &&
-        typeof entry.summary === "string" &&
-        entry.summary.trim().length > 0
+        Number.isInteger(rawIndex) &&
+        (rawIndex as number) >= 0 &&
+        (rawIndex as number) < items.length &&
+        typeof rawSummary === "string" &&
+        rawSummary.trim().length > 0
       ) {
         // The model numbers these itself, and it demonstrably miscounts when
         // the list interleaves long 【全文摘錄】 blocks between headlines —
@@ -289,7 +326,7 @@ async function summarizeBatch(items: NewsFeedItem[], fullTextById: Map<string, s
         // (older/uncooperative responses stay on the previous behaviour
         // rather than losing every summary).
         const echoed = typeof entry.title === "string" ? entry.title.trim() : "";
-        let target = entry.index as number;
+        let target = rawIndex as number;
         if (echoed) {
           if (!titlesMatch(items[target].title, echoed)) {
             const found = items.findIndex((it) => titlesMatch(it.title, echoed));
@@ -300,7 +337,7 @@ async function summarizeBatch(items: NewsFeedItem[], fullTextById: Map<string, s
         const item = items[target];
         if (map.has(item.id)) continue;
         map.set(item.id, {
-          summary: entry.summary.trim().slice(0, SUMMARY_MAX_LEN),
+          summary: rawSummary.trim().slice(0, SUMMARY_MAX_LEN),
           kind: fullTextById.has(item.id) ? "fulltext" : "headline",
         });
       }
