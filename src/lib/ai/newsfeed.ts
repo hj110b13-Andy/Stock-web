@@ -161,7 +161,15 @@ export async function summarizeItems(items: NewsFeedItem[]): Promise<NewsFeedIte
   const candidates = items.filter((item) => !item.summary && item.kind === "news");
   if (candidates.length === 0) return items;
 
-  const cacheKey = (id: string) => `news-item-summary:${id}`;
+  // Bumped to v2: the cached value's shape changed from a plain string to
+  // {summary, kind} (see StoredSummary) when full-text summarization was
+  // added. Without a version bump, a pre-existing string-shaped cache entry
+  // from before this change reads back "truthy" from peekCached (so it's
+  // treated as a hit, not a miss) but has no .summary/.kind properties —
+  // silently producing an item with summary=undefined forever until its
+  // old TTL expires. Exactly the same bumped-cache-key pattern getNewsFeed
+  // already uses below (news-feed:v1 -> v2) for the same reason.
+  const cacheKey = (id: string) => `news-item-summary:v2:${id}`;
   const peeked = await Promise.all(candidates.map((item) => peekCached<StoredSummary>(cacheKey(item.id))));
 
   const missing: NewsFeedItem[] = [];
