@@ -136,13 +136,28 @@ async function fetchTpexJson<T>(url: string, timeoutMs = 8000): Promise<T> {
  * Separately from the TLS root-cause above, TPEx's large whole-market
  * payloads were also observed (from the local dev machine, pre-dating the
  * TLS diagnosis — see git history) to sometimes arrive short of their own
- * `Content-Length`. Kept as defense-in-depth even though the TLS fix above
- * was the actual production blocker: resumes any shortfall with a
+ * `Content-Length`, cutting off roughly every ~200KB on average. Kept as
+ * defense-in-depth even though the TLS fix above was the main production
+ * blocker for the quotes endpoint: resumes any shortfall with a
  * `Range: bytes=<received>-` request for exactly the missing tail (pinned
  * to the same file version via `If-Range`/ETag), rather than either
  * trusting a short body or blindly re-downloading everything.
+ *
+ * Budget sized for the LARGEST payload this module fetches (the ~1MB
+ * company listing, mopsfin_t187ap03_O — roughly 3x the ~350KB quotes
+ * snapshot): at a ~200KB-per-successful-segment rate, completing 1MB can
+ * genuinely take on the order of 5+ resume hops even when nothing is
+ * actually failing outright, so a budget sized for the smaller endpoint
+ * (6 was enough for quotes, confirmed live) left too little margin for the
+ * company listing specifically — confirmed live as the reason the merged TW
+ * universe was still TWSE-only after the TLS fix landed (the quotes
+ * endpoint completed fine within budget; the larger company listing did
+ * not, so fetchTpexListedCompanies() kept throwing and getTwUniverse()'s
+ * merge fell back to TWSE-only via its per-exchange catch). Each attempt is
+ * fast (sub-second, confirmed via timing logs) so a larger budget doesn't
+ * meaningfully change the happy-path latency, only the worst case.
  */
-const TPEX_MAX_RESUME_ATTEMPTS = 6;
+const TPEX_MAX_RESUME_ATTEMPTS = 25;
 // Separate from the resume-attempt budget above: this covers the INITIAL
 // request failing outright (connection reset, TLS hiccup, timeout) before
 // any bytes — and therefore before any Content-Length — are even known, a
