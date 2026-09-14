@@ -507,7 +507,7 @@ export default function StockChart({
           </button>
           {showSettings && (
             <div className="absolute right-0 z-20 mt-1 w-44 rounded-md border border-(--gridline) bg-(--surface-1) p-2 shadow-lg">
-              <p className="mb-1 px-1 text-[11px] text-(--text-muted)">套用到所有股票的圖表</p>
+              <p className="mb-1 px-1 text-[13px] text-(--text-muted)">套用到所有股票的圖表</p>
               {INDICATOR_LABELS.map(({ key, label }) => (
                 <label key={key} className="flex items-center gap-2 rounded px-1 py-1 text-sm hover:bg-(--page-plane)">
                   <input type="checkbox" checked={indicators[key]} onChange={() => toggleIndicator(key)} />
@@ -536,7 +536,7 @@ export default function StockChart({
           <div className="absolute inset-0 animate-pulse rounded-md bg-(--page-plane)" />
         )}
       </div>
-      <p className="mt-2 text-[11px] text-(--text-muted)">將滑鼠移到圖表上可查看該日詳細開高低收與成交量</p>
+      <p className="mt-2 text-[13px] text-(--text-muted)">將滑鼠移到圖表上可查看該日詳細開高低收與成交量</p>
     </div>
   );
 }

@@ -38,7 +38,7 @@ export default function FundamentalsCard({ fundamentals, currency }: { fundament
           </div>
         </dl>
       )}
-      <p className="mt-3 text-[11px] text-(--text-muted)">
+      <p className="mt-3 text-[13px] text-(--text-muted)">
         台股資料來源：TWSE／TPEx 公開資訊（每日更新）｜美股資料來源：Yahoo Finance。抓不到時顯示「資料暫缺」，不會用示範數字頂替。
       </p>
     </div>

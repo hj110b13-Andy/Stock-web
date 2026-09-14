@@ -32,7 +32,7 @@ export default function ActionBriefCard() {
       <div className="flex items-center gap-2">
         <h2 className="font-semibold">🎯 今日建議</h2>
         {brief && !brief.usedAi && (
-          <span className="rounded-full bg-(--page-plane) px-2 py-0.5 text-[11px] text-(--text-muted)">資料整理</span>
+          <span className="rounded-full bg-(--page-plane) px-2 py-0.5 text-[13px] text-(--text-muted)">資料整理</span>
         )}
       </div>
       <div className="mt-2 space-y-1 text-sm leading-relaxed text-(--text-secondary)">
@@ -44,7 +44,7 @@ export default function ActionBriefCard() {
           <ActionBriefSkeleton />
         )}
       </div>
-      <p className="mt-3 text-[11px] text-(--text-muted)">
+      <p className="mt-3 text-[13px] text-(--text-muted)">
         {brief?.usedAi ? "由 AI 依當前市場資料自動生成，" : ""}
         僅為個人參考看法，不構成投資建議
         {brief ? ` · 更新於 ${new Date(brief.generatedAt).toLocaleTimeString("zh-TW", { timeZone: "Asia/Taipei" })}` : ""}

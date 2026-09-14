@@ -52,7 +52,7 @@ export default function WatchlistTable({ items, emptyLabel }: { items: HoldingIt
           quick glance) makes the swipe discoverable without redesigning the
           table into a stacked mobile layout. sm: hides it once the table
           actually fits without scrolling. */}
-      <p className="text-[11px] text-(--text-muted) sm:hidden">← 可左右滑動查看持有股數／平均成本／損益 →</p>
+      <p className="text-[13px] text-(--text-muted) sm:hidden">← 可左右滑動查看持有股數／平均成本／損益 →</p>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[560px] text-sm">
           <thead>
@@ -107,7 +107,7 @@ function HoldingRow({ item }: { item: HoldingItem }) {
           {item.name}
           <span className="ml-1.5 text-(--text-muted) tabular-nums">{item.symbol}</span>
         </Link>
-        <span className="ml-2 rounded bg-(--page-plane) px-1.5 py-0.5 text-[10px] text-(--text-muted)">
+        <span className="ml-2 rounded bg-(--page-plane) px-1.5 py-0.5 text-[12px] text-(--text-muted)">
           {item.market === "TW" ? "台股" : "美股"}
         </span>
       </td>

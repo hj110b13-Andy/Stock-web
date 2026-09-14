@@ -7,7 +7,14 @@
   --page-plane: #f9f9f7;
   --text-primary: #0b0b0b;
   --text-secondary: #52514e;
-  --text-muted: #898781;
+  /* Was #898781 (only 3.4-3.5:1 against the light surfaces below — under
+     WCAG AA's 4.5:1 normal-text threshold, it only clears the 3:1 large-text
+     one). Darkened to clear 4.5:1+ everywhere this is used, which skews
+     toward small caption/footnote text on this site — exactly where low
+     contrast is hardest to read, and the user specifically asked for the
+     whole site to read clearly for older eyes. Kept the same warm (not
+     neutral) gray cast as the original. */
+  --text-muted: #6d6b65;
   --gridline: #e1e0d9;
   --baseline: #c3c2b7;
   --border: rgba(11, 11, 11, 0.1);
@@ -112,11 +119,25 @@
 
 html {
   font-family: var(--font-sans);
+  /* The user asked for the whole site's text to read clearly at a glance,
+     including for older readers — Tailwind's text/spacing scale is rem-
+     based, so bumping the root size (16px -> 18px) scales every text-xs/
+     text-sm/text-base/etc. utility AND every rem-based padding/gap
+     proportionally site-wide, instead of needing to hand-edit every
+     component's className. A few fixed-px (text-[Npx]) instances that
+     don't use the rem scale are bumped individually where they occur. */
+  font-size: 112.5%;
 }
 
 body {
   background: var(--page-plane);
   color: var(--text-primary);
+  /* A slightly more generous default than Tailwind's leading-normal (1.5)
+     — noticeably easier to track line-to-line for anyone reading dense
+     numeric tables/paragraphs at a glance, at a small cost to vertical
+     density. Components can still override with their own leading-* utility
+     where a tighter fit is genuinely needed (e.g. a compact table row). */
+  line-height: 1.6;
 }
 
 .tabular-nums {

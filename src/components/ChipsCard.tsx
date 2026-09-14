@@ -106,7 +106,7 @@ export default function ChipsCard({
         )}
       </div>
 
-      <p className="mt-3 text-[11px] text-(--text-muted)">
+      <p className="mt-3 text-[13px] text-(--text-muted)">
         資料來源：TWSE／TPEx 公開資訊（三大法人買賣超單位為股、融資融券單位為張，收盤後更新）。僅台股提供，抓不到時顯示「資料暫缺」，不會用示範數字頂替。
       </p>
     </div>
