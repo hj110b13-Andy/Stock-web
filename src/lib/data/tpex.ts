@@ -22,132 +22,84 @@ const TPEX_HEADERS = { "User-Agent": "Mozilla/5.0 (compatible; StockRadar/1.0)" 
 
 /**
  * ROOT CAUSE, found live via a temporary diagnostic route deployed to
- * production: every TPEx fetch failed on Vercel (100% of the time — not
- * intermittent) with `TypeError: fetch failed` / cause
- * "unable to verify the first certificate", while the exact same fetch
- * succeeded reliably from this project's local dev machine. `openssl
- * s_client -showcerts` against www.tpex.org.tw confirmed the server presents
- * its leaf cert plus one intermediate ("TWCA SSL Certification Authority")
- * but relies on the client already trusting the root, ultimately "TWCA
- * CYBER Root CA" (Taiwan's TWCA national CA). Windows' own certificate
- * store trusts that root (hence curl/Node both working fine on this dev
- * machine), but it is NOT part of Node's bundled Mozilla-derived default CA
- * list, so Node's `fetch`/TLS stack on Vercel's Linux runtime can't
- * complete the chain and refuses the connection outright before any bytes
- * are exchanged. This is NOT the response-truncation issue chased earlier
- * in this same build (that was real too, but separate, and apparently
- * specific to conditions on the local dev network — it never showed up as
- * the failure mode on Vercel; there it was 100% a TLS handshake failure,
- * not a partial body).
+ * production (and confirmed by an independent research pass that connected
+ * directly to Vercel/AWS's outbound IPs): `www.tpex.org.tw` is geo/CDN
+ * split. Requests from Taiwan (this project's local dev machine included)
+ * hit an origin that sends the full leaf+intermediate chain and just work.
+ * Requests from outside Taiwan — which is what Vercel's serverless
+ * functions are, regardless of which region is configured — get routed to
+ * a Cloudflare-fronted endpoint that sends ONLY the leaf certificate,
+ * omitting the intermediate ("TWCA SSL Certification Authority"). Node
+ * already bundles the ultimate root ("TWCA CYBER Root CA") in its default
+ * trust store, so the root was never actually the missing piece — earlier
+ * attempts at this fix added various root certs and made no difference for
+ * exactly that reason (the error `UNABLE_TO_VERIFY_LEAF_SIGNATURE` means a
+ * missing intermediate; a missing root gives a different OpenSSL error,
+ * `UNABLE_TO_GET_ISSUER_CERT_LOCALLY`). Verified fix: add the missing
+ * intermediate itself to the trusted set — Node/OpenSSL is fine treating a
+ * `ca`-supplied cert as a trust anchor even when it isn't a self-signed
+ * root, since its own issuer (the root) is already trusted by default.
  *
- * An earlier version of this fix also embedded a second, self-signed
- * certificate also named "TWCA CYBER Root CA" that turned out — confirmed
- * by comparing SHA-256 fingerprints against a fresh `openssl s_client
- * -showcerts` capture — to be a DIFFERENT, unrelated certificate that just
- * happens to share the same Subject DN as the real one below (TWCA
- * apparently reissued a cert under the identical name at some point).
- * Having two same-Subject-different-key certs in the trusted set at once is
- * exactly the kind of edge case that can confuse an OpenSSL-based path
- * builder, and removing it (keeping only the two certs below, whose
- * fingerprints are confirmed to match what the live server's chain actually
- * needs) is the fix — not adding more, less.
+ * This is NOT the response-truncation issue chased earlier in this same
+ * build (that was real too, but separate — see fetchTpexFullBody below).
  *
- * Fix: a dedicated `https.Agent` for TPEx requests with these root CAs
+ * Fix: a dedicated `https.Agent` for TPEx requests with this intermediate
  * added on top of Node's default trusted set (`tls.rootCertificates`) —
- * this is additive (nothing stops trusting anything it trusted before), not
- * a blanket `rejectUnauthorized: false`, so certificate validation stays
+ * additive (nothing stops trusting anything it trusted before), not a
+ * blanket `rejectUnauthorized: false`, so certificate validation stays
  * fully enforced, just now able to complete the one chain that was missing.
- *
- * These two certs (this one and TWCA_GLOBAL_ROOT_CA_PEM below) were
- * captured via `openssl s_client -showcerts` against www.tpex.org.tw and
- * cross-checked by SHA-256 fingerprint against the chain the live server
- * actually presents — "TWCA CYBER Root CA" here is issued BY "TWCA Global
- * Root CA" (an even older, more widely-trusted root — a common CA
- * transition technique, similar to how Let's Encrypt's ISRG Root X1 was
- * cross-signed by DST Root X3 for a while), and together they complete a
- * full 4-tier chain (leaf → SSL Sub-CA → this cert → TWCA Global Root CA).
  */
-const TWCA_CYBER_ROOT_CA_PEM = `-----BEGIN CERTIFICATE-----
-MIIGUTCCBDmgAwIBAgIQQAE0jRkAAAAAAAAMzfmTejANBgkqhkiG9w0BAQwFADBR
+const TWCA_SSL_SUB_CA_PEM = `-----BEGIN CERTIFICATE-----
+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
-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
------END CERTIFICATE-----`;
-
-/** Self-signed "TWCA Global Root CA" — the higher root that
- *  TWCA_CYBER_ROOT_CA_CROSS_SIGNED_PEM above chains up to. Valid to 2030. */
-const TWCA_GLOBAL_ROOT_CA_PEM = `-----BEGIN CERTIFICATE-----
-MIIFQTCCAymgAwIBAgICDL4wDQYJKoZIhvcNAQELBQAwUTELMAkGA1UEBhMCVFcx
-EjAQBgNVBAoTCVRBSVdBTi1DQTEQMA4GA1UECxMHUm9vdCBDQTEcMBoGA1UEAxMT
-VFdDQSBHbG9iYWwgUm9vdCBDQTAeFw0xMjA2MjcwNjI4MzNaFw0zMDEyMzExNTU5
-NTlaMFExCzAJBgNVBAYTAlRXMRIwEAYDVQQKEwlUQUlXQU4tQ0ExEDAOBgNVBAsT
-B1Jvb3QgQ0ExHDAaBgNVBAMTE1RXQ0EgR2xvYmFsIFJvb3QgQ0EwggIiMA0GCSqG
-SIb3DQEBAQUAA4ICDwAwggIKAoICAQCwBdvI64zEbooh745NnHEKH1Jw7W2CnJfF
-10xORUnLQEK1EjRsGcJ0pDFfhQKX7EMzClPSnIyOt7h52yvVavKOZsTuKwEHktSz
-0ALfUPZVr2YOy+BHYC8rMjk1Ujoog/h7FsYYuGLWRyWRzvAZEk2tY/XTP3VfKfCh
-MBwqoJimFb3u/Rk28OKRQ4/6ytYQJ0lM793B8YVwm8rqqFpD/G2Gb3PpN0Wp8DbH
-zIh1HrtsBv+baz4X7GGqcXzGHaL3SekVtTzWoWH1EfcFbx39Eb7QMAfCKbAJTibc
-46KokWofwpFFiFzlmLhxpRUZyXx1EcxwdE8tmx2RRP1WKKD+u4ZqyPpcC1jcxkt2
-yKsi2XMPpfRaAok/T54igu6idFMqPVMnaR1sjjIsZAAmY2E2TqNGtz99sy2sbZCi
-laLOz9qC5wc0GZbpuCGqKX6mOL6OKUohZnkfs8O1CWfe1tQHRvMq2uYiN2DLgbYP
-oA/pyJV/v1WRBXrPPRXAb94JlAGD1zQbzECl8LibZ9WYkTunhHiVJqRaCPgrdLQA
-BDzfuBSO6N+pjWxnkjMdwLfS7JLIvgm/LCkFbwJrnu+8vyq8W8BQj0FwcYeyTbcE
-qYSjMq+u7msXi7Kx/mzhkIyIqJdIzshNy/MGz19qCkKxHh53L46g5pIOBvwFItIm
-4TFRfTLcDwIDAQABoyMwITAOBgNVHQ8BAf8EBAMCAQYwDwYDVR0TAQH/BAUwAwEB
-/zANBgkqhkiG9w0BAQsFAAOCAgEAXzSBdu+WHdXltdkCY4QWwa6gcFGn90xHNcgL
-1yg9iXHZqjNB6hQbbCEAwGxCGX6faVsgQt+i0trEfJdLjbDorMjupWkEmQqSpqsn
-LhpNgb+E1HAerUf+/UqdM+DyucRFCCEK2mlpc3INvjT+lIutwx4116KD7+U4x6WF
-H6vPNOw/KP4M8VeGTslV9xzU2KV9Bnpv1d8Q34FOIWWxtuEXeZVFBs5fzNxGiWNo
-RI2T9GRwoD2dKAXDOXC4Ynsg/eTb6QihuJ49CcdP+yz4k3ZB3lLg4VfSnQO8d57+
-nile98FRYB/e2guyLXW3Q0iT5/Z5xoRdgFlglPx4mI88k1HtQJAH32RjJMtOcQWh
-15QaiDLxInQirqWm2BJpTGCjAu4r7NRjkgtevi92a6O2JryPA9gK8kxkRr05YuWW
-6zRjESjMlfGt7+/cgFhI6Uu46mWs6fyAtbXIRfmswZ/ZuepiiI7E8UuDEq3mi4TW
-nsLrgxifarsbJGAzcMzs9zLzXNl5fe+epP7JI8Mk7hWSsT2RTyaGvWZzJBPqpK5j
-wa19hAM8EHiGG3njxPPyBJUgriOCxLM6AGK/5jYk4Ve6xx6QddVfP5VhK8E7zeWz
-aGHQRiapIVJpLesux+t3zqY6tQMzT3bR51xUAV3LePTJDL/PEo4XLSNolOer/qmy
-KwbQBM0=
+IENBMRswGQYDVQQDExJUV0NBIENZQkVSIFJvb3QgQ0EwHhcNMjMwMjIzMDcyMjI0
+WhcNMzMwMjIzMTU1OTU5WjBhMQswCQYDVQQGEwJUVzESMBAGA1UEChMJVEFJV0FO
+LUNBMRMwEQYDVQQLEwpTU0wgU3ViLUNBMSkwJwYDVQQDEyBUV0NBIFNTTCBDZXJ0
+aWZpY2F0aW9uIEF1dGhvcml0eTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoC
+ggIBAMquxiSlMrxfOO29yqxCo/BIYBswnE7snZnuZDPcx8N9WhOdNGDsF024VjXK
+nXoVaZBcv56eFsU+w9Mcq+uIVYzjVrBoe5u8ZLE0hPSkluH8URhcxtSQJ+gXcB0L
+JHsseAeXVcgqoxTSJ6/n0xTCeXEnGwSRAzrqTvjS2gbd3TILxsfIHwRgwwPjBDgm
+tjzbHHOFTJB3GCtH65T9A0viM2B/IW9Wz73jkz02AVMrZBHQ67IJ2W9CoIjd5mdG
+eIV36U9NXl+wZa/D90pLRsFVbItKgLXgF71CQ92vS/biTx8fA6UUCU2ToNczP5Ur
+A/mDXCBCLakwa1I3ylRkgFwluJw9DqiYh56MRgsEABa+ZPrm1Qb9njQZK4Y4V+ML
+IvGM3xVoHIlvaSN29ubTueLpTeuAwN2VTiRzfOyCRKTcMBCtlMw1WCJNAMiNWDWS
+BMnY9SlKv1oujmjS/ti0ptcipMymIoeWpVuQt3Mj8lYlKRpd6Zg8MbljMwQRSClK
+6O6MSwpM3Xy5uJGh2cY5oYmKtxfyHSuKtKsk+daAPV1lpWYp9bNrbsLUPwmSY+zk
+VgkZdiWBF//RP/72/esANONINy5hkWjkVd0NLjA5TAgk+DVVmnPtQIj1vBgtk8ak
+Y9CczIbEgKBonkHWn+GX2ycR6jadg2P+xrBFg4MGjomkb2gtAgMBAAGjggGXMIIB
+kzAfBgNVHSMEGDAWgBSdhWEUfMFib5do5E83QOGt4A1WNzAdBgNVHQ4EFgQU8ijU
++dQcfhprFoLl75Mpae3KFSAwDgYDVR0PAQH/BAQDAgEGMBMGA1UdJQQMMAoGCCsG
+AQUFBwMBMEoGA1UdIARDMEEwNQYLKwYBBAGCvyUBARUwJjAkBggrBgEFBQcCARYY
+aHR0cHM6Ly93d3cudHdjYS5jb20udHcvMAgGBmeBDAECAjBNBgNVHR8ERjBEMEKg
+QKA+hjxodHRwOi8vUm9vdENBLnR3Y2EuY29tLnR3L1RXQ0FSQ0EvY3liZXJfcm9v
+dF9yZXZva2VfMjAyMi5jcmwwEgYDVR0TAQH/BAgwBgEB/wIBADB9BggrBgEFBQcB
+AQRxMG8wQwYIKwYBBQUHMAKGN2h0dHA6Ly9zc2xzZXJ2ZXIudHdjYS5jb20udHcv
+Y2FjZXJ0L2N5YmVyX3Jvb3RfMjAyMi5jcnQwKAYIKwYBBQUHMAGGHGh0dHA6Ly9y
+b290b2NzcC50d2NhLmNvbS50dy8wDQYJKoZIhvcNAQEMBQADggIBAIFF/6Gnvu8L
+3xQDIampB8QVgoKS2bcjte0uJBbCrQHpzcGTuVTkZaiA86LwVz6SAU7TVgVYRXmt
+x8l29WzfKI6wOAzmvlGZxSYAdN0I6YBkJK1nmDs0+TSw5lCzb+UOpajNOaMdJ5SN
+YTN87yRwl82AFrwUmSLaMV4tN7W49N0SsELWs/d4uNHSMM0mBjd0hLDIWJFwOkuD
+yOWahnCVfPlCwSVWpUntOGgOHOA02IUE+JNX+spIV1SwAMYaEVyHe316YUgiGA5y
+k3liTa3vuv06eE1J2yiWrs9booW2VTHD+amzucFFNN1KvSLjSbYxG1t/FclHEN/y
+6hGM3bkjRC31A0jzpv93D3MUQTdJascicPa0H4i8hviRriyetaC6HC4q8FQUTo2A
+cEpxicNGgyHhDV+YdbnS6GZL+f3bsmMM8ZFYZ77mDTS9mRO1VnIwkjiN4vpzh67a
+KTpoD9TQzZcGQiJy6Pi+PCSFiqjK7UD/63L/Pt0hpoNKvZLrz4ngrlpyzpx8KjeS
+A5cjKcc6vlHm0Kk07k5djhJsaqQELso5r+UXi9qC+nwqPuR/w5kJZv4fz0ND4UhY
+5y3qd+iCikkF3WzOzey7jUH9URKb3iZnRAHZvmyLK57UI0FwP+5xZEByvwXDtxbe
+914Hj3cSUrmKT3g/ZlOQQ1THeu48MA79
 -----END CERTIFICATE-----`;
 
 // Built once per process (not per request): building the trusted-CA list
 // and Agent is pure/cheap but there's no reason to redo it every call.
-// NOTE: these two certs are valid to Dec 2030 (checked via `openssl x509
-// -noout -dates`) — this hardcoded workaround will need refreshing (repeat
-// `openssl s_client -showcerts -connect www.tpex.org.tw:443` and update the
-// PEM blocks above) once they approach expiry, since Node will go back to
-// failing the same chain-verification error once these certs are no longer
-// valid rather than merely "missing".
+// NOTE: this cert is valid to 2033-02-23 (checked via `openssl x509 -noout
+// -dates`) — this hardcoded workaround will need refreshing (repeat
+// `openssl s_client -showcerts -connect www.tpex.org.tw:443` from a
+// non-Taiwan vantage point and update the PEM block above) once it
+// approaches expiry, since Node will go back to failing the same
+// chain-verification error once this cert is no longer valid rather than
+// merely "missing".
 const tpexHttpsAgent = new https.Agent({
-  ca: [...tls.rootCertificates, TWCA_CYBER_ROOT_CA_PEM, TWCA_GLOBAL_ROOT_CA_PEM],
+  ca: [...tls.rootCertificates, TWCA_SSL_SUB_CA_PEM],
   keepAlive: true,
 });
 
@@ -191,9 +143,28 @@ async function fetchTpexJson<T>(url: string, timeoutMs = 8000): Promise<T> {
  * trusting a short body or blindly re-downloading everything.
  */
 const TPEX_MAX_RESUME_ATTEMPTS = 6;
+// Separate from the resume-attempt budget above: this covers the INITIAL
+// request failing outright (connection reset, TLS hiccup, timeout) before
+// any bytes — and therefore before any Content-Length — are even known, a
+// gap the resume loop alone can't cover since it only starts once there's
+// something to resume from. Confirmed live that this does happen (an
+// ECONNRESET on the very first connection attempt, independent of the TLS
+// chain-verification issue this module also works around).
+const TPEX_MAX_INITIAL_ATTEMPTS = 3;
 
 async function fetchTpexFullBody(url: string, timeoutMs: number): Promise<string> {
-  const first = await tpexHttpsGet(url, TPEX_HEADERS, timeoutMs);
+  let first: RawResponse | undefined;
+  let initialErr: unknown;
+  for (let attempt = 0; attempt < TPEX_MAX_INITIAL_ATTEMPTS; attempt++) {
+    try {
+      first = await tpexHttpsGet(url, TPEX_HEADERS, timeoutMs);
+      break;
+    } catch (err) {
+      initialErr = err;
+    }
+  }
+  if (!first) throw initialErr ?? new Error(`TPEx request failed after ${TPEX_MAX_INITIAL_ATTEMPTS} attempts: ${url}`);
+
   const contentLength = first.headers["content-length"];
   const expected = parseInt(Array.isArray(contentLength) ? contentLength[0] : contentLength ?? "0", 10);
   const etagRaw = first.headers["etag"];
