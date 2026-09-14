@@ -8,6 +8,7 @@ import {
   getMaterialAnnouncements,
   getMultiSignalStocks,
   getQuote,
+  getTwUniverse,
   searchStocks,
 } from "@/lib/data";
 import type { Market } from "@/lib/data";
@@ -249,7 +250,21 @@ async function buildHoldingsGrounding(holdings: HoldingInput[]): Promise<string>
   return lines.join("\n");
 }
 
-function guessSymbolFromText(text: string): { symbol: string; market: Market } | undefined {
+async function guessSymbolFromText(text: string): Promise<{ symbol: string; market: Market } | undefined> {
+  // findSymbolByName reads a module-level snapshot that only gets populated
+  // once getTwUniverse() has actually run in this process — true even after
+  // the universe.ts fix that made that snapshot cover the full ~1000-company
+  // list rather than the capped 200. A plain single-stock chat question
+  // never otherwise calls getTwUniverse() (only searchStocks/momentum/etc.
+  // do), so on Vercel — many short-lived serverless instances, each with
+  // its own copy of that module-level variable — a request could easily
+  // land on an instance that never happened to run it, silently falling
+  // back to the tiny 44-company seed list and failing to find anything but
+  // the most obvious large caps. Awaiting it here is cheap regardless: the
+  // underlying data is Redis-cached (shared across every instance, unlike
+  // the in-memory snapshot itself), so this is a fast cache hit on any
+  // instance that isn't the very first to ever run cold.
+  await getTwUniverse().catch(() => undefined);
   const byName = findSymbolByName(text);
   if (byName) return { symbol: byName.symbol, market: byName.market };
 
@@ -272,7 +287,7 @@ export async function answerQuestion(
 ): Promise<AskResult> {
   const target = contextSymbol
     ? { symbol: contextSymbol, market: undefined as Market | undefined }
-    : guessSymbolFromText(question);
+    : await guessSymbolFromText(question);
   const wantsMovers = !target && MOVERS_INTENT_PATTERN.test(question);
 
   let groundedSymbol: string | undefined;
