@@ -18,6 +18,7 @@ import { formatMarketCap, formatSharesWithLots } from "@/lib/format";
 import { callAiProviders } from "@/lib/ai/provider";
 import { getNewsFeed } from "@/lib/ai/newsfeed";
 import { computeSignals } from "@/lib/signals";
+import { isNearTaiexFuturesSettlement } from "@/lib/marketCalendar";
 import type { ChatTurn } from "@/lib/ai/types";
 
 export interface AskResult {
@@ -40,6 +41,17 @@ export interface HoldingInput {
 // with a year, and "20XX年" is by far the most common way one shows up in a
 // question that isn't about a specific stock at all.
 const SYMBOL_PATTERN = /\b\d{4,6}\b(?!\s*年)|\b[A-Z]{1,5}\b/g;
+
+/** Same pattern as twse.ts's own taipeiToday() — each module keeps a small
+ *  local copy rather than sharing one, consistent with how us.ts/tpex.ts
+ *  already each own their own small date helpers in this codebase. */
+function taipeiTodayForAsk(): { year: number; month: number; day: number } {
+  const [y, m, d] = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei" })
+    .format(new Date())
+    .split("-")
+    .map((n) => parseInt(n, 10));
+  return { year: y, month: m, day: d };
+}
 const STOPWORDS = new Set([
   "THE", "AND", "FOR", "ARE", "WHY", "HOW", "WHAT", "WILL", "WITH", "THIS",
   "THAT", "CAN", "YOU", "PLEASE", "STOCK", "TODAY", "NOW", "AI", "US", "TW",
@@ -534,10 +546,23 @@ export async function answerQuestion(
         ? `【個股資料】\n${stockGroundings[0].text}`
         : stockGroundings.map((g, i) => `【個股資料 ${i + 1}：${g.symbol}】\n${g.text}`).join("\n\n");
 
+  // Pure calendar fact, no fetch needed — a user asked for special TW
+  // market dates (台指期結算 specifically named) to factor into the model's
+  // reasoning about unusual volatility that isn't explained by any one
+  // stock's own news. Only surfaced when actually near/on the date, so
+  // ordinary days don't get a pointless mention.
+  const settlement = isNearTaiexFuturesSettlement(taipeiTodayForAsk());
+  const specialDateNote = settlement.isSettlementDay
+    ? `今天（${settlement.settlementDateIso}）是台指期（台股期貨/選擇權）結算日，法人為了結算常有調節台股成分股部位的動作，當天大盤或權值股出現平常少見的量價波動，有可能只是結算效應、不一定代表個股/大盤趨勢真的轉變，回答時可以視情況提及這個角度。`
+    : settlement.isNear
+      ? `本月台指期（台股期貨/選擇權）結算日是 ${settlement.settlementDateIso}，快到了，這幾天大盤/權值股可能會出現法人為結算調節部位的量價波動，回答時可以視情況提及這個角度，不用每次都硬套。`
+      : "";
+
   const grounding = [
     stockGroundingText,
     notFoundNote,
     partialNotFoundNote,
+    specialDateNote ? `【台股特殊日期】\n${specialDateNote}` : "",
     indexGrounding ? `【大盤概況（台股＋美股）】\n${indexGrounding}` : "",
     pinnedEventsText ? `【近期重大事件（AI 已判斷為可能影響整體大盤等級）】\n${pinnedEventsText}` : "",
     marketNewsText ? `【近期市場新聞】\n${marketNewsText}` : "",
@@ -562,7 +587,7 @@ export async function answerQuestion(
     "用到任何專有名詞（例如本益比、股價淨值比、RSI、MACD、三大法人、融資融券、殖利率）時，一定要在講完後順手用幾個字白話解釋是什麼意思，不能假設對方已經懂——例如『本益比（股價相對獲利的貴不貴）』這種簡短帶過即可，不用長篇說明，但絕對不能完全不解釋就丟術語。",
     "籌碼面的詞彙實測特別容易漏解釋：『三大法人』第一次出現時一定要附帶解釋『（外資、投信、自營商這些大戶）』，『外資』第一次出現要附帶『（外國機構投資人）』，『投信』要附帶『（國內基金公司）』，『融資』要附帶『（跟券商借錢買股票）』，『融券』要附帶『（跟券商借股票來放空）』，『籌碼』要附帶『（誰在買誰在賣的動向）』，個股資料裡技術訊號如果出現『0軸』（MACD訊號的一部分），第一次出現要附帶『（0軸是判斷多空力道強弱的分界線）』——這條規則優先於『簡短』的要求，就算為了這句解釋讓回答變長一點也要保留；同一次回答裡第一次出現才需要附帶解釋，之後同一個詞重複出現不用每次都再解釋一遍。",
     "結論要明確、不要打模糊仗：看法就直接講『我覺得...』『目前比較適合...』，不要只丟一堆數字不表態、也不要每句話都加但書搞得使用者還是不知道該怎麼辦。能一兩句話講完的就不要條列；只有在真的有好幾個平行項目時才用條列，且每項一行、不要展開解釋。",
-    "你會拿到「個股資料」（使用者問特定股票時，內含報價/K線/技術訊號（均線位置、均線多空排列、RSI、MACD含0軸強弱、KD、布林通道，有觸發才會列出，不是每次都有），資料充足時還會有：「基本面」本益比/股價淨值比/殖利率/市值、「財報」月營收年增率與季度EPS、「籌碼面」三大法人買賣超與融資融券餘額增減（僅台股，美股沒有這塊資料）、「近期重大訊息公告」（僅台股）、「近期相關新聞」）、「大盤概況」（台股加權指數、道瓊、S&P 500、那斯達克）、「近期重大事件」（AI 已經先篩過、判斷屬於可能影響整體大盤等級的消息，附有白話影響說明，沒有這類消息時就不會出現這個區塊）、「近期市場新聞」（台股/美股各幾則近期真實新聞標題，美股這塊同時混合中英文來源），有時候還有「今日焦點數據」（今日漲幅榜、技術訊號共振股）、「我的關注清單/持股」（使用者關注清單裡每一檔的即時報價，有設定成本/股數的還會有損益）。",
+    "你會拿到「個股資料」（使用者問特定股票時，內含報價/K線/技術訊號（均線位置、均線多空排列、RSI、MACD含0軸強弱、KD、布林通道，有觸發才會列出，不是每次都有），資料充足時還會有：「基本面」本益比/股價淨值比/殖利率/市值、「財報」月營收年增率與季度EPS、「籌碼面」三大法人買賣超與融資融券餘額增減（僅台股，美股沒有這塊資料）、「近期重大訊息公告」（僅台股）、「近期相關新聞」）、「大盤概況」（台股加權指數、道瓊、S&P 500、那斯達克、費城半導體指數）、「近期重大事件」（AI 已經先篩過、判斷屬於可能影響整體大盤等級的消息，附有白話影響說明，沒有這類消息時就不會出現這個區塊）、「近期市場新聞」（台股/美股各幾則近期真實新聞標題，美股這塊同時混合中英文來源），有時候還有「今日焦點數據」（今日漲幅榜、技術訊號共振股）、「台股特殊日期」（只有接近或剛好是台指期結算日才會出現，說明法人結算調節可能造成的量價波動，跟個股/大盤基本面無關）、「我的關注清單/持股」（使用者關注清單裡每一檔的即時報價，有設定成本/股數的還會有損益）。",
     "使用者問『資訊面/消息面/新聞/為什麼漲跌/財報/籌碼/法人在買還是在賣/融資融券』這類問題時：直接引用「近期市場新聞」或個股資料裡對應的區塊講重點（標題、大概方向、來源、實際數字即可，不用逐字複述），這些都是真實抓到的資料，不要再回答『沒有新聞管道』『系統僅提供報價數據』這種話——現在有了。某個區塊資料不夠或抓不到時才老實說目前查不到，不要就此完全略過不提；台股籌碼面/重大訊息若某檔當天剛好沒有法人動作或沒有公告，這是正常現象，直接說『今天沒有明顯的法人動向/沒有重大訊息』即可，不是資料抓取失敗。",
     "籌碼面的三大法人數字資料裡已經同時附上「股」跟換算好的「約XX張」兩種寫法，直接照抄其中一種講就好，絕對不要自己把股數重新換算成張（1張=1000股這個換算你自己心算很容易出錯，之前就出現過1000倍、10倍算錯、甚至同一句話裡數字前後矛盾的情況），也不要把股數誤講成張數的量級。",
     "給看法或建議時，要綜合基本面（估值高不高）、財報（營收獲利趨勢）、籌碼面（法人是在買超還是賣超、融資是不是異常暴增暴減）、消息面（近期新聞/重大訊息有沒有利多利空）、技術面（均線/RSI/MACD/KD/布林通道/量價）這幾個面向一起判斷，不要只看單一面向就下結論；面向之間互相矛盾時（例如技術面強但法人在賣、或基本面便宜但籌碼面偏空）要老實點出這個矛盾，不要選擇性忽略對你的結論不利的那一面。",
