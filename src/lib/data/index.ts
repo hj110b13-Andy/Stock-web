@@ -27,7 +27,7 @@ import { fetchUsCandles, fetchUsEarnings, fetchUsFundamentals, fetchUsQuote, fet
 import { computeSignals, type Signal } from "@/lib/signals";
 
 export * from "./types";
-export { sectorsFor, getTwUniverse, findSymbolByName } from "./universe";
+export { sectorsFor, getTwUniverse, findSymbolByName, findAllSymbolsByName } from "./universe";
 
 async function universeFor(market: Market): Promise<UniverseEntry[]> {
   return market === "TW" ? getTwUniverse() : US_UNIVERSE;

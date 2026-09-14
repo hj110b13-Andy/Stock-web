@@ -488,6 +488,42 @@ export function findSymbolByName(text: string): UniverseEntry | undefined {
   return nameLookupPool.find((entry) => entry.name.length >= 2 && text.includes(entry.name));
 }
 
+/**
+ * Like findSymbolByName, but collects every distinct company name found in
+ * the text (up to `limit`), not just the first — needed for comparison
+ * questions ("A跟B比較", "2330和2454哪個好") that name more than one company
+ * at once. Still checked longest-name-first (same pool ordering as
+ * findSymbolByName) so a specific name is preferred over a shorter one that
+ * happens to also be a substring, and results are deduped by symbol.
+ *
+ * Also tracks which character ranges of the text have already been claimed
+ * by a longer match, and skips any shorter name whose only occurrence falls
+ * entirely inside an already-claimed range — without this, "聯發科比較"
+ * matches BOTH "聯發科"(2454) and "聯發"(1459, a real but unrelated textile
+ * company, "聯發紡織") purely because "聯發" is a substring of "聯發科",
+ * turning a two-stock comparison into an incorrect three-stock one. Only
+ * checks the first occurrence of each name; a name that appears again
+ * elsewhere in the text outside any claimed range is a rare enough phrasing
+ * that this doesn't try to handle it specially.
+ */
+export function findAllSymbolsByName(text: string, limit: number): UniverseEntry[] {
+  const results: UniverseEntry[] = [];
+  const seen = new Set<string>();
+  const claimed: Array<[number, number]> = [];
+  for (const entry of nameLookupPool) {
+    if (results.length >= limit) break;
+    if (entry.name.length < 2 || seen.has(entry.symbol)) continue;
+    const start = text.indexOf(entry.name);
+    if (start === -1) continue;
+    const end = start + entry.name.length;
+    if (claimed.some(([s, e]) => start < e && end > s)) continue;
+    seen.add(entry.symbol);
+    claimed.push([start, end]);
+    results.push(entry);
+  }
+  return results;
+}
+
 export function sectorsFor(market: Market): string[] {
   const pool = market === "TW" ? twUniverseSnapshot : US_UNIVERSE;
   const set = new Set(pool.map((e) => e.sector));

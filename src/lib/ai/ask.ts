@@ -1,5 +1,5 @@
 import {
-  findSymbolByName,
+  findAllSymbolsByName,
   getChart,
   getChips,
   getEarnings,
@@ -250,33 +250,155 @@ async function buildHoldingsGrounding(holdings: HoldingInput[]): Promise<string>
   return lines.join("\n");
 }
 
-async function guessSymbolFromText(text: string): Promise<{ symbol: string; market: Market } | undefined> {
-  // findSymbolByName reads a module-level snapshot that only gets populated
-  // once getTwUniverse() has actually run in this process — true even after
-  // the universe.ts fix that made that snapshot cover the full ~1000-company
-  // list rather than the capped 200. A plain single-stock chat question
-  // never otherwise calls getTwUniverse() (only searchStocks/momentum/etc.
-  // do), so on Vercel — many short-lived serverless instances, each with
-  // its own copy of that module-level variable — a request could easily
-  // land on an instance that never happened to run it, silently falling
-  // back to the tiny 44-company seed list and failing to find anything but
-  // the most obvious large caps. Awaiting it here is cheap regardless: the
-  // underlying data is Redis-cached (shared across every instance, unlike
-  // the in-memory snapshot itself), so this is a fast cache hit on any
-  // instance that isn't the very first to ever run cold.
-  await getTwUniverse().catch(() => undefined);
-  const byName = findSymbolByName(text);
-  if (byName) return { symbol: byName.symbol, market: byName.market };
+// A comparison question ("台積電跟聯發科比較"、"2330和2454哪個好") names more
+// than one company at once — capped at 4 so a rambling question naming half
+// the market doesn't turn into 4+ parallel buildStockGrounding() calls each
+// firing their own quote/chart/fundamentals/news fetches.
+const MAX_COMPARE_TARGETS = 4;
 
-  const matches = text.toUpperCase().match(SYMBOL_PATTERN);
-  if (!matches) return undefined;
-  for (const m of matches) {
-    if (/^\d{4,6}$/.test(m)) return { symbol: m, market: "TW" };
+async function guessSymbolsFromText(text: string): Promise<{ symbol: string; market: Market }[]> {
+  // findSymbolByName/findAllSymbolsByName read a module-level snapshot that
+  // only gets populated once getTwUniverse() has actually run in this
+  // process — true even after the universe.ts fix that made that snapshot
+  // cover the full official TWSE+TPEx listing rather than a small seed. A
+  // plain single-stock chat question never otherwise calls getTwUniverse()
+  // (only searchStocks/momentum/etc. do), so on Vercel — many short-lived
+  // serverless instances, each with its own copy of that module-level
+  // variable — a request could easily land on an instance that never
+  // happened to run it, silently falling back to a tiny seed list and
+  // failing to find anything but the most obvious large caps. Awaiting it
+  // here is cheap regardless: the underlying data is Redis-cached (shared
+  // across every instance, unlike the in-memory snapshot itself), so this
+  // is a fast cache hit on any instance that isn't the very first to ever
+  // run cold.
+  await getTwUniverse().catch(() => undefined);
+
+  const seen = new Set<string>();
+  const candidates: Array<{ symbol: string; market: Market; index: number }> = [];
+
+  for (const entry of findAllSymbolsByName(text, MAX_COMPARE_TARGETS * 2)) {
+    if (seen.has(entry.symbol)) continue;
+    seen.add(entry.symbol);
+    candidates.push({ symbol: entry.symbol, market: entry.market, index: text.indexOf(entry.name) });
   }
-  for (const m of matches) {
-    if (!STOPWORDS.has(m) && /^[A-Z]{1,5}$/.test(m)) return { symbol: m, market: "US" };
+
+  // Numeric codes/tickers are checked too (not just names) and merged by
+  // symbol — e.g. "2330 跟 2454 比較" has no company *name* in it at all,
+  // and "2330(台積電)" shouldn't double-count the same stock from both a
+  // name match and a code match.
+  const upper = text.toUpperCase();
+  const matches = upper.match(SYMBOL_PATTERN);
+  if (matches) {
+    for (const m of matches) {
+      if (seen.has(m)) continue;
+      if (/^\d{4,6}$/.test(m)) {
+        seen.add(m);
+        candidates.push({ symbol: m, market: "TW", index: upper.indexOf(m) });
+      } else if (!STOPWORDS.has(m) && /^[A-Z]{1,5}$/.test(m)) {
+        seen.add(m);
+        candidates.push({ symbol: m, market: "US", index: upper.indexOf(m) });
+      }
+    }
+  }
+
+  return candidates
+    .sort((a, b) => a.index - b.index)
+    .slice(0, MAX_COMPARE_TARGETS)
+    .map(({ symbol, market }) => ({ symbol, market }));
+}
+
+// Users often ask about an informal "theme" of stocks (e.g. "AI概念股"、
+// "半導體股"、"航運股") rather than either one specific stock or a generic
+// "what's hot" question. Two tiers of theme resolution:
+// 1. Official industry categories — TWSE/TPEx's own shared classification
+//    (TW_INDUSTRY_NAMES in twse.ts, used by both exchanges since universe.ts
+//    merged them) is already attached to every stock in the universe.
+//    Mapping a theme keyword straight to one of these is safe: it's real
+//    official classification data, not a judgment call this site is making.
+// 2. A small hand-curated overlay for informal CROSS-sector groupings that
+//    have no single official category (e.g. "AI概念股" spans chip design,
+//    fab, AI-server ODM/assembly, and high-speed-interconnect makers) —
+//    deliberately short and limited to names repeatedly and widely reported
+//    in Taiwan financial media as core constituents, precisely because
+//    there's no official source backing this one. The grounding text says
+//    so explicitly so the model never presents it as an exhaustive or
+//    official list.
+interface ThemeMatch {
+  label: string;
+  sector?: string;
+  symbols?: Array<{ symbol: string; market: Market }>;
+  curated?: boolean;
+}
+
+const SECTOR_THEMES: Array<{ pattern: RegExp; sector: string; label: string }> = [
+  { pattern: /半導體(股|類股|產業)?/, sector: "半導體業", label: "半導體" },
+  { pattern: /航運(股|類股)?/, sector: "航運業", label: "航運" },
+  { pattern: /金融股|金融類股/, sector: "金融保險業", label: "金融" },
+  { pattern: /生技(股|類股)?|生醫股/, sector: "生技醫療業", label: "生技醫療" },
+  { pattern: /鋼鐵股|鋼鐵類股/, sector: "鋼鐵工業", label: "鋼鐵" },
+  { pattern: /通信網路股|電信類股/, sector: "通信網路業", label: "通信網路" },
+  { pattern: /光電股|光電類股/, sector: "光電業", label: "光電" },
+  { pattern: /資訊服務股/, sector: "資訊服務業", label: "資訊服務" },
+];
+
+const AI_THEME_SYMBOLS: Array<{ symbol: string; market: Market }> = [
+  { symbol: "2330", market: "TW" }, // 台積電
+  { symbol: "2317", market: "TW" }, // 鴻海
+  { symbol: "2454", market: "TW" }, // 聯發科
+  { symbol: "2382", market: "TW" }, // 廣達
+  { symbol: "3231", market: "TW" }, // 緯創
+  { symbol: "2356", market: "TW" }, // 英業達
+  { symbol: "6669", market: "TW" }, // 緯穎
+  { symbol: "3661", market: "TW" }, // 世芯-KY
+  { symbol: "2308", market: "TW" }, // 台達電
+];
+
+function detectTheme(question: string): ThemeMatch | undefined {
+  if (/AI(概念股|相關股|供應鏈|伺服器)|人工智慧(概念股|相關股)/.test(question)) {
+    return { label: "AI供應鏈", symbols: AI_THEME_SYMBOLS, curated: true };
+  }
+  for (const { pattern, sector, label } of SECTOR_THEMES) {
+    if (pattern.test(question)) return { label, sector };
   }
   return undefined;
+}
+
+const THEME_SYMBOL_LIMIT = 10;
+const THEME_CHIP_LIMIT = 5;
+
+async function buildThemeGrounding(theme: ThemeMatch): Promise<string> {
+  try {
+    let pool: Array<{ symbol: string; market: Market; name: string; price: number; changePercent: number }>;
+    if (theme.sector) {
+      pool = await searchStocks({ market: "TW", sectors: [theme.sector], sortBy: "changePercent", sortDir: "desc" });
+    } else if (theme.symbols) {
+      const quotes = await Promise.all(theme.symbols.map((s) => getQuote(s.symbol, s.market).catch(() => null)));
+      pool = quotes
+        .filter((q): q is NonNullable<typeof q> => q !== null)
+        .map((q) => ({ symbol: q.symbol, market: q.market, name: q.name, price: q.price, changePercent: q.changePercent }))
+        .sort((a, b) => b.changePercent - a.changePercent);
+    } else {
+      return "";
+    }
+    if (pool.length === 0) return "";
+
+    const shown = pool.slice(0, THEME_SYMBOL_LIMIT);
+    const chipEntries = await Promise.all(
+      shown.slice(0, THEME_CHIP_LIMIT).map(async (s) => [s.symbol, await getChips(s.symbol, "TW").catch(() => null)] as const)
+    );
+    const chipsMap = new Map(chipEntries);
+    const lines = shown.map((s) => {
+      const chip = chipsMap.get(s.symbol);
+      const chipText = chip?.institutionalNetShares != null ? `；三大法人${formatSharesWithLots(chip.institutionalNetShares)}` : "";
+      return `${s.name}(${s.symbol})：${s.price} ${s.changePercent >= 0 ? "+" : ""}${s.changePercent}%${chipText}`;
+    });
+    const note = theme.curated
+      ? `（本站整理的常見${theme.label}相關個股，非完整或官方分類清單，僅供參考）`
+      : `（依 TWSE/TPEx 官方產業分類「${theme.sector}」列出，依今日漲跌幅排序，共${pool.length}檔，列出前${shown.length}檔）`;
+    return `${note}\n${lines.join("\n")}`;
+  } catch {
+    return "";
+  }
 }
 
 export async function answerQuestion(
@@ -285,40 +407,58 @@ export async function answerQuestion(
   history: ChatTurn[] = [],
   holdings: HoldingInput[] = []
 ): Promise<AskResult> {
-  const target = contextSymbol
-    ? { symbol: contextSymbol, market: undefined as Market | undefined }
-    : await guessSymbolFromText(question);
-  const wantsMovers = !target && MOVERS_INTENT_PATTERN.test(question);
+  const targets = contextSymbol
+    ? [{ symbol: contextSymbol, market: undefined as Market | undefined }]
+    : await guessSymbolsFromText(question);
+  // A themed request ("AI概念股有哪些") only makes sense to check when the
+  // question didn't already resolve to specific stock(s) — "台積電是不是
+  // AI概念股" should still ground 台積電 itself, not switch over to the
+  // theme screen.
+  const themeMatch = targets.length === 0 ? detectTheme(question) : undefined;
+  const wantsMovers = targets.length === 0 && !themeMatch && MOVERS_INTENT_PATTERN.test(question);
 
   let groundedSymbol: string | undefined;
 
   // Always ground with both markets' index levels (not just whichever
   // market the question is about), plus the specific stock's data when one
-  // is targeted, so the model can reason about TW/US cross-market influence
-  // (e.g. Nasdaq overnight moves affecting semiconductor names) instead of
-  // only seeing the one stock in isolation. General market news is likewise
-  // always fetched (not just when a stock is targeted) — it's what used to
-  // be missing entirely whenever someone asked about "資訊面"/總經 without
-  // naming a specific stock, which had no grounding path to attach it to.
-  const [stockGrounding, indexGrounding, moversGrounding, holdingsGrounding, marketNews, newsFeed] = await Promise.all([
-    target ? buildStockGrounding(target) : Promise.resolve(undefined),
-    getIndices()
-      .then((indices) => {
-        if (indices.length === 0) return "（大盤指數目前無法取得）";
-        return indices.map((i) => `${i.name}：${i.price}（${i.change >= 0 ? "+" : ""}${i.changePercent}%）`).join("\n");
-      })
-      .catch(() => ""),
-    wantsMovers ? buildMoversGrounding() : Promise.resolve(""),
-    buildHoldingsGrounding(holdings).catch(() => ""),
-    Promise.all([fetchNews("台股", 6), fetchUsMarketNews(5)]).catch(() => [[], []] as const),
-    // Shares the same 20-minute cache as the /news page's AI classifier — a
-    // near-free reuse of work already done there (which items are genuinely
-    // market-moving, plus a one-line plain-language "what this means" for
-    // each) rather than re-deriving importance from the raw headlines below.
-    getNewsFeed().catch(() => ({ pinned: [], items: [], generatedAt: "" })),
-  ]);
+  // or more is targeted, so the model can reason about TW/US cross-market
+  // influence (e.g. Nasdaq overnight moves affecting semiconductor names)
+  // instead of only seeing one stock in isolation. General market news is
+  // likewise always fetched (not just when a stock is targeted) — it's what
+  // used to be missing entirely whenever someone asked about "資訊面"/總經
+  // without naming a specific stock, which had no grounding path to attach
+  // it to.
+  const [stockGroundingResults, indexGrounding, moversGrounding, themeGrounding, holdingsGrounding, marketNews, newsFeed] =
+    await Promise.all([
+      Promise.all(targets.map((t) => buildStockGrounding(t))),
+      getIndices()
+        .then((indices) => {
+          if (indices.length === 0) return "（大盤指數目前無法取得）";
+          return indices.map((i) => `${i.name}：${i.price}（${i.change >= 0 ? "+" : ""}${i.changePercent}%）`).join("\n");
+        })
+        .catch(() => ""),
+      wantsMovers ? buildMoversGrounding() : Promise.resolve(""),
+      themeMatch ? buildThemeGrounding(themeMatch) : Promise.resolve(""),
+      buildHoldingsGrounding(holdings).catch(() => ""),
+      Promise.all([fetchNews("台股", 6), fetchUsMarketNews(5)]).catch(() => [[], []] as const),
+      // Shares the same 20-minute cache as the /news page's AI classifier —
+      // a near-free reuse of work already done there (which items are
+      // genuinely market-moving, plus a one-line plain-language "what this
+      // means" for each) rather than re-deriving importance from the raw
+      // headlines below.
+      getNewsFeed().catch(() => ({ pinned: [], items: [], generatedAt: "" })),
+    ]);
 
-  if (stockGrounding) groundedSymbol = stockGrounding.symbol;
+  const stockGroundings = stockGroundingResults.filter((g): g is { symbol: string; text: string } => g !== undefined);
+  if (stockGroundings.length > 0) groundedSymbol = stockGroundings[0].symbol;
+  // At least one candidate symbol was parsed out of the question but NONE
+  // of them resolved to real data — the single-target case this already
+  // handled before multi-symbol support existed. A PARTIAL miss (e.g.
+  // "環球晶跟世界先進比較" when only one of the two is covered) is handled
+  // differently below: the found stock's real 個股資料 block plus a small
+  // named note about the specific one that wasn't found, not this generic
+  // "nothing at all" note.
+  const unresolvedTargets = targets.filter((t) => !stockGroundings.some((g) => g.symbol === t.symbol));
 
   const [twNews, usNews] = marketNews;
   const marketNewsText = [
@@ -342,18 +482,40 @@ export async function answerQuestion(
   // explicit (rather than relying only on the general system-prompt
   // instruction not to fabricate, which evidently wasn't enough on its own
   // here) gives the model something concrete to react to.
+  // contextSymbol always names a real stock (it comes from a stock detail
+  // page the user is already looking at) — a failed fetch there is a
+  // transient data problem, not "this isn't a real/covered stock", so it
+  // must never trigger either not-found note below.
   const notFoundNote =
-    !stockGrounding && !contextSymbol && !wantsMovers
+    !contextSymbol && targets.length > 0 && stockGroundings.length === 0
       ? "【內部系統標記／非使用者可見文字，禁止原樣照抄輸出】比對結果：這個問題沒有比對到本站資料庫裡任何一檔股票或公司（可能是名稱/代號打錯、簡稱、或這檔股票不在本站資料涵蓋範圍——本站台股目前涵蓋證交所上市（TWSE）及櫃買中心上櫃（TPEx）公司，不含興櫃）。請用你自己的話，以一般對話語氣告訴使用者查不到，不要複製這段標記文字本身。"
       : "";
+  // Partial miss on a multi-stock question (e.g. "環球晶跟世界先進比較" when
+  // only one of the two is covered) — some real data was found, so the
+  // generic "nothing matched at all" note above doesn't apply, but the
+  // model still needs an explicit signal for the specific one that wasn't
+  // found, or it risks filling that gap in with its own trained knowledge.
+  const partialNotFoundNote =
+    !contextSymbol && stockGroundings.length > 0 && unresolvedTargets.length > 0
+      ? `【內部系統標記／非使用者可見文字，禁止原樣照抄輸出】比對結果：這次問題裡有部分股票/公司查到真實資料（見上方個股資料），但以下這幾個代號沒有比對到本站資料庫裡任何資料，可能是名稱/代號打錯或不在本站資料涵蓋範圍：${unresolvedTargets.map((t) => t.symbol).join("、")}。請用你自己的話誠實說明這幾個查不到，絕對不要用自己的知識填補這幾檔的任何具體數字，不要複製這段標記文字本身。`
+      : "";
+
+  const stockGroundingText =
+    stockGroundings.length === 0
+      ? ""
+      : stockGroundings.length === 1
+        ? `【個股資料】\n${stockGroundings[0].text}`
+        : stockGroundings.map((g, i) => `【個股資料 ${i + 1}：${g.symbol}】\n${g.text}`).join("\n\n");
 
   const grounding = [
-    stockGrounding ? `【個股資料】\n${stockGrounding.text}` : "",
+    stockGroundingText,
     notFoundNote,
+    partialNotFoundNote,
     indexGrounding ? `【大盤概況（台股＋美股）】\n${indexGrounding}` : "",
     pinnedEventsText ? `【近期重大事件（AI 已判斷為可能影響整體大盤等級）】\n${pinnedEventsText}` : "",
     marketNewsText ? `【近期市場新聞】\n${marketNewsText}` : "",
     moversGrounding ? `【今日焦點數據（漲幅榜、技術訊號共振股）】\n${moversGrounding}` : "",
+    themeGrounding ? `【主題股清單】\n${themeGrounding}` : "",
     holdingsGrounding ? `【我的關注清單/持股】\n${holdingsGrounding}` : "",
   ]
     .filter(Boolean)
@@ -368,7 +530,7 @@ export async function answerQuestion(
     // violating the site's core "never fabricate" principle. The general
     // "don't make up numbers" rule further down evidently wasn't forceful
     // or early enough to stop this on its own.
-    "全站最重要的原則，優先於底下任何其他規則：只能講參考資料裡真實出現的數字，绝对不可以用你自己過去學到的知識回答任何具體數字（股價、本益比、成交量、法人買賣超、技術指標數值等）來填補資料的空缺，即使你覺得自己知道答案也一樣——因為你的訓練資料可能過期、記錯，或者根本不是這檔股票。如果參考資料裡出現『比對結果：這個問題沒有比對到本站資料庫裡任何一檔股票或公司』這類標記，代表這個問題沒有比對到本站資料庫裡任何股票，一律用你自己的話直接誠實回答『目前查不到這檔股票/公司的資料，可能是名稱或代號打錯、或不在本站資料涵蓋範圍（本站台股目前涵蓋證交所上市（TWSE）及櫃買中心上櫃（TPEx）公司，不含興櫃）』，絕對不要把參考資料裡的內部標記文字（含中括號【】包住的內部提示語）直接照抄貼到回答裡，那些是寫給你看的指示、不是要你輸出的內容；也不要接著又用自己的知識補一段分析上去；如果使用者這句話根本沒有在問特定股票（例如問名詞解釋、問大盤整體狀況），就不用提這件事，正常回答就好。",
+    "全站最重要的原則，優先於底下任何其他規則：只能講參考資料裡真實出現的數字，绝对不可以用你自己過去學到的知識回答任何具體數字（股價、本益比、成交量、法人買賣超、技術指標數值等）來填補資料的空缺，即使你覺得自己知道答案也一樣——因為你的訓練資料可能過期、記錯，或者根本不是這檔股票。如果參考資料裡出現『比對結果：這個問題沒有比對到本站資料庫裡任何一檔股票或公司』這類標記，代表這個問題沒有比對到本站資料庫裡任何股票，一律用你自己的話直接誠實回答『目前查不到這檔股票/公司的資料，可能是名稱或代號打錯、或不在本站資料涵蓋範圍（本站台股目前涵蓋證交所上市（TWSE）及櫃買中心上櫃（TPEx）公司，不含興櫃）』；如果出現的是『這次問題裡有部分股票/公司查到真實資料...但以下這幾個代號沒有比對到』這類標記，代表使用者問的其中幾檔有資料、其他幾檔沒有，有資料的那幾檔照樣用真實數字回答，沒資料的那幾檔一樣誠實說查不到，絕對不要用自己的知識把它補齊；不管是哪一種標記，絕對不要把參考資料裡的內部標記文字（含中括號【】包住的內部提示語）直接照抄貼到回答裡，那些是寫給你看的指示、不是要你輸出的內容；也不要接著又用自己的知識補一段分析上去；如果使用者這句話根本沒有在問特定股票（例如問名詞解釋、問大盤整體狀況），就不用提這件事，正常回答就好。",
     "這個網站的目標使用者是完全沒有股票/財經背景的一般人，終極目標是讓他們能快速看懂現況、知道自己可以怎麼做。回答一定要簡短、直接、好懂：能一兩句話講完就不要拉長，不要模稜兩可、不要來回鋪陳、不要重複同樣的免責聲明兩次以上。語氣像在跟朋友講重點，不是寫報告或論文。",
     "用到任何專有名詞（例如本益比、股價淨值比、RSI、MACD、三大法人、融資融券、殖利率）時，一定要在講完後順手用幾個字白話解釋是什麼意思，不能假設對方已經懂——例如『本益比（股價相對獲利的貴不貴）』這種簡短帶過即可，不用長篇說明，但絕對不能完全不解釋就丟術語。",
     "籌碼面的詞彙實測特別容易漏解釋：『三大法人』第一次出現時一定要附帶解釋『（外資、投信、自營商這些大戶）』，『外資』第一次出現要附帶『（外國機構投資人）』，『投信』要附帶『（國內基金公司）』，『融資』要附帶『（跟券商借錢買股票）』，『融券』要附帶『（跟券商借股票來放空）』，『籌碼』要附帶『（誰在買誰在賣的動向）』，個股資料裡技術訊號如果出現『0軸』（MACD訊號的一部分），第一次出現要附帶『（0軸是判斷多空力道強弱的分界線）』——這條規則優先於『簡短』的要求，就算為了這句解釋讓回答變長一點也要保留；同一次回答裡第一次出現才需要附帶解釋，之後同一個詞重複出現不用每次都再解釋一遍。",
@@ -386,6 +548,8 @@ export async function answerQuestion(
     "請根據資料回答，不要編造資料中沒有的數字；若資料標示為無法取得，直接說目前查不到，不要繞圈子解釋為什麼查不到。",
     "使用者之前的提問與你的回覆會一併附上作為對話紀錄，回答新問題時請自然承接對話脈絡（例如使用者接著問「那美股呢」時，要記得他上一句在問什麼）。",
     "使用者問『還有其他/還有別的/有沒有機會』這類接續問題時，優先從「今日焦點數據」的技術訊號共振股/漲幅榜裡挑對話中還沒提過的標的，並具體引用該檔的數據（訊號、法人買賣超、漲跌幅），不要因為想不到新標的就退回『AI伺服器供應鏈』『半導體設備股』『防禦性類股』這種沒有點名具體股票、任何人不用看盤都講得出來的空泛說法；如果資料裡真的已經沒有還沒提過的標的，就老實說『目前資料裡比較突出的大概就這幾檔』，不要硬掰新的類股概念湊答案。",
+    "使用者一次問到兩檔以上股票做比較（例如『A跟B比較』『這幾檔誰比較好』）時，如果「個股資料」有列出多個區塊（會分別標示每一檔），要針對每一檔各自的實際數字逐項比較（現價/漲跌、本益比、營收/EPS成長、法人買賣超、技術面），講出你覺得哪一檔目前比較好、為什麼，不要只把每檔資料複述一遍卻不下結論；如果其中某幾檔查不到資料，就照實只講查得到的那幾檔並誠實說明另一檔查不到，不要用自己的知識幫查不到的那檔瞎猜數字或做比較。",
+    "使用者問『XX概念股/XX類股/XX相關股有哪些』這類主題式問題時（例如『AI概念股』『半導體股』『航運股』），直接引用「主題股清單」區塊裡的真實股票與數據來回答，可以綜合漲跌幅與法人籌碼講出你覺得目前比較值得留意的幾檔，但只能從清單裡的股票挑、不要無中生有列出清單以外的公司；清單如果註明是『本站整理的常見相關個股、非完整或官方分類清單』，回答時就照實反映這一點（例如『以下是幾檔常見的相關個股，不是完整清單』），不要講得像官方權威分類。",
   ].join("\n");
 
   const userContent = grounding
