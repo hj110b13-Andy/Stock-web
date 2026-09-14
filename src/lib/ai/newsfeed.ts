@@ -1,4 +1,4 @@
-import { cached } from "@/lib/data/cache";
+import { cached, peekCached, writeCached } from "@/lib/data/cache";
 import { fetchNewsFeedPool, type NewsItem } from "@/lib/data/news";
 import { getMultiSignalStocks } from "@/lib/data";
 import { callAiProviders } from "@/lib/ai/provider";
@@ -7,10 +7,12 @@ export interface NewsFeedItem extends NewsItem {
   /** Derived from the item's own identity (link, or source+title when there
    *  is no link) — stable across cache regenerations, not fetch order. */
   id: string;
-  /** AI-written plain-language "what this means" — only ever set on pinned
-   *  items (see MAX_PINNED); running this for the whole pool (hundreds of
-   *  items per generation) isn't affordable on the free AI tier this site
-   *  runs on, and the ordinary feed is skimmable by headline alone. */
+  /** AI-written plain-language "what this means" — pinned items get theirs
+   *  from selectPinned() when the feed is generated; regular items get
+   *  theirs lazily, one page at a time, from summarizeItems() below (see
+   *  that function for why this can't just run over the whole pool up
+   *  front). Absent only while a page's summaries haven't been requested
+   *  yet or the AI call for them failed. */
   summary?: string;
   /** "data" items are this site's own computed figures (technical signals,
    *  institutional flow), not scraped news — `link` points at our own
@@ -93,6 +95,85 @@ async function selectPinned(candidates: NewsItem[]): Promise<PinnedPick[]> {
       .slice(0, MAX_PINNED);
   } catch {
     return [];
+  }
+}
+
+const ITEM_SUMMARY_TTL_MS = 12 * 60 * 60_000; // a headline's gist doesn't change; cache generously across pool regenerations
+const SUMMARY_MAX_LEN = 100;
+
+/**
+ * Fills in `summary` for regular (non-pinned) feed items — a user asked for
+ * every item to have one, not just the AI-curated pinned picks, but
+ * summarizing the whole pool (several hundred items, regenerated every 20
+ * minutes) up front would multiply the site's AI usage far beyond what the
+ * free tier can sustain. Instead this runs lazily over whatever page the
+ * API route actually serves: each item's summary is cached individually by
+ * its own stable id (peekCached/writeCached, not the read-or-compute
+ * `cached()` — see cache.ts for why), so a page is only ever summarized
+ * once across its whole lifetime (repeat views, other visitors, even later
+ * pool regenerations that happen to reintroduce the same still-recent
+ * article all hit the cache), and only the items actually missing a cached
+ * summary trigger a single batched AI call together.
+ */
+export async function summarizeItems(items: NewsFeedItem[]): Promise<NewsFeedItem[]> {
+  const candidates = items.filter((item) => !item.summary && item.kind === "news");
+  if (candidates.length === 0) return items;
+
+  const cacheKey = (id: string) => `news-item-summary:${id}`;
+  const peeked = await Promise.all(candidates.map((item) => peekCached<string>(cacheKey(item.id))));
+
+  const missing: NewsFeedItem[] = [];
+  const fromCache = new Map<string, string>();
+  candidates.forEach((item, i) => {
+    const hit = peeked[i];
+    if (hit) fromCache.set(item.id, hit);
+    else missing.push(item);
+  });
+
+  const fromAi = missing.length > 0 ? await summarizeBatch(missing) : new Map<string, string>();
+  await Promise.all(
+    Array.from(fromAi.entries()).map(([id, summary]) => writeCached(cacheKey(id), summary, ITEM_SUMMARY_TTL_MS))
+  );
+
+  return items.map((item) => {
+    const summary = item.summary ?? fromCache.get(item.id) ?? fromAi.get(item.id);
+    return summary ? { ...item, summary } : item;
+  });
+}
+
+async function summarizeBatch(items: NewsFeedItem[]): Promise<Map<string, string>> {
+  const listText = items.map((item, i) => `${i}. ${item.title}${item.source ? `（${item.source}）` : ""}`).join("\n");
+  const system = [
+    "你是財經新聞編輯，針對下面清單裡的每一則新聞標題，用繁體中文寫一句話（40字以內）白話說明這則新聞大概在講什麼，讓完全沒有股票背景的人也能一眼看懂重點，不要只是換句話重複標題本身，也不要加上投資建議。",
+    '只能回傳一個 JSON 陣列本身，每個元素是 {"index": 編號, "summary": "重點摘要"}，順序或數量不用跟輸入一致，每一則清單裡的新聞都要有對應的一筆，不要有其他文字、說明或 markdown code block 標記。',
+  ].join("\n");
+
+  try {
+    const result = await callAiProviders(system, [{ role: "user", content: `新聞清單：\n${listText}` }], {
+      maxOutputTokens: Math.max(600, items.length * 60),
+    });
+    if (!result.usedAi) return new Map();
+    const match = result.answer.match(/\[[\s\S]*\]/);
+    if (!match) return new Map();
+    const parsed = JSON.parse(match[0]);
+    if (!Array.isArray(parsed)) return new Map();
+    const map = new Map<string, string>();
+    for (const entry of parsed) {
+      if (
+        entry &&
+        typeof entry === "object" &&
+        Number.isInteger(entry.index) &&
+        entry.index >= 0 &&
+        entry.index < items.length &&
+        typeof entry.summary === "string" &&
+        entry.summary.trim().length > 0
+      ) {
+        map.set(items[entry.index].id, entry.summary.trim().slice(0, SUMMARY_MAX_LEN));
+      }
+    }
+    return map;
+  } catch {
+    return new Map();
   }
 }
 

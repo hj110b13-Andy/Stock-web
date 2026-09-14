@@ -204,6 +204,37 @@ async function writeRedis(key: string, value: unknown, ttlMs: number): Promise<v
   }
 }
 
+/**
+ * Reads a cache entry without computing or writing anything on a miss —
+ * `cached()` can't do this on its own since it always calls `load()` and
+ * writes the result when the key isn't present. Needed for a "check which
+ * of these N keys are already cached, then make one batched call to fill in
+ * only the missing ones" pattern (e.g. per-news-item AI summaries: caching
+ * a `load()` that returns null on miss would permanently cache "no summary"
+ * for that item, never batching it).
+ */
+export async function peekCached<T>(key: string): Promise<T | undefined> {
+  const local = readMemory(key);
+  if (local.hit) return local.value as T;
+  if (kvEnabled && redis) {
+    try {
+      const hit = await redis.get<CacheEnvelope>(key);
+      if (isEnvelope(hit) && hit.e > Date.now()) return hit.v as T;
+    } catch {
+      // Redis unreachable; treat as a miss
+    }
+  }
+  return undefined;
+}
+
+/** Writes a value directly into the cache (memory + Redis), independent of
+ *  the read-or-compute flow `cached()` provides — the write half of the
+ *  "batch-fill only what peekCached() found missing" pattern above. */
+export async function writeCached<T>(key: string, value: T, ttlMs: number): Promise<void> {
+  writeMemory(key, value, ttlMs);
+  if (kvEnabled && redis) await writeRedis(key, value, ttlMs);
+}
+
 /** Splits an array into fixed-size groups — used to keep batch-quote request
  * URLs/payloads a safe size once the stock universe grew well past a
  * couple dozen symbols. */

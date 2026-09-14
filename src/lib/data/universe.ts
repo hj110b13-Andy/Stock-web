@@ -265,21 +265,53 @@ export const US_UNIVERSE: UniverseEntry[] = [
 
 const TW_UNIVERSE_TTL_MS = 24 * 60 * 60_000; // official company list changes rarely; refresh once a day
 // Bounds how many TW symbols downstream code batch-fetches quotes/charts
-// for at once — TWSE lists roughly 1000 companies, and rankings/momentum
-// screens need to stay responsive rather than firing hundreds of concurrent
-// requests. Capped, not fabricated: everything past the cap simply isn't
-// included, the same way an unreachable quote is omitted rather than
-// replaced with a guess. Kept deliberately conservative (not the full
-// ~1000) because a burst of hundreds of concurrent requests to TWSE's
-// unofficial MIS endpoint risks getting the whole site rate-limited —
-// including single-stock lookups that have nothing to do with this list —
-// rather than just leaving this particular screen slow.
-const MAX_TW_UNIVERSE = 200;
+// for at once (search results, rankings, momentum screening) — TWSE lists
+// roughly 1000 companies, and rankings/momentum screens need to stay
+// responsive rather than firing hundreds of concurrent requests. Capped,
+// not fabricated: everything past the cap simply isn't included in THOSE
+// screens, the same way an unreachable quote is omitted rather than
+// replaced with a guess — this does not limit which stocks a single-stock
+// lookup (by code, or by name via findSymbolByName) can find; see
+// twFullCompanySnapshot above, which is never capped.
+//
+// Raised from 200 to 500: fetchTwseQuotesBatch already chunks the whole
+// list into groups of 50 in one pipe-separated request per chunk (not one
+// request per symbol), so this only changes the batch from ~4 chunks to
+// ~10 — still nowhere near the "~100 concurrent connections" scale that
+// previously caused real rate-limiting on a *different* TWSE endpoint (the
+// per-candidate-per-month chart fetch used by momentum screening, bounded
+// separately by MOMENTUM_CHART_CONCURRENCY). Verified locally that
+// /api/search?market=TW still returns promptly at 500.
+const MAX_TW_UNIVERSE = 500;
 
 // Kept in sync (best-effort, in the background) so the synchronous
 // findInUniverse/sectorsFor helpers below get the fuller official list as
 // soon as it's been fetched once, without every caller having to await it.
+// Two separate snapshots on purpose: `twUniverseSnapshot` is capped (see
+// MAX_TW_UNIVERSE) for anything that batch-fetches live quotes for the whole
+// list (search/rankings/momentum) — that cap exists to protect TWSE's
+// unofficial batch-quote endpoint from too much concurrent load, a real
+// constraint. But `findSymbolByName`/`findInUniverse` never batch-fetch
+// anything themselves — they're a single dictionary lookup — so capping
+// *them* to the same 200 was an unnecessary side effect of reusing one
+// snapshot for both jobs. A user reported the AI/chat/search-by-name
+// couldn't find "many stocks" and their P/E, monthly revenue etc. came back
+// missing; the underlying data endpoints (BWIBBU_ALL, monthly revenue,
+// quarterly EPS — see twse.ts) already cover the full ~1000-company listing
+// regardless of this cap, so the actual bug was that the *name lookup*
+// itself never got past the first 200 whenever a real stock's Chinese name
+// was typed into chat/search instead of its numeric code.
 let twUniverseSnapshot: UniverseEntry[] = TW_UNIVERSE_SEED;
+let twFullCompanySnapshot: UniverseEntry[] = TW_UNIVERSE_SEED;
+// Pre-sorted (longest name first) once per getTwUniverse() refresh, not on
+// every findSymbolByName() call — that function runs on every chat message,
+// and re-sorting ~1000+ entries per call would be wasted work repeated on a
+// hot path for a list that only actually changes once a day.
+let nameLookupPool: UniverseEntry[] = buildNameLookupPool(TW_UNIVERSE_SEED);
+
+function buildNameLookupPool(twCompanies: UniverseEntry[]): UniverseEntry[] {
+  return [...twCompanies, ...US_UNIVERSE].sort((a, b) => b.name.length - a.name.length);
+}
 
 /**
  * The full TW stock universe, sourced from TWSE's official open-data
@@ -319,21 +351,29 @@ function capUniverse(companies: UniverseEntry[]): UniverseEntry[] {
 
 export async function getTwUniverse(): Promise<UniverseEntry[]> {
   const { fetchTwseListedCompanies } = await import("./twse");
-  const result = await cached("tw-universe-full", TW_UNIVERSE_TTL_MS, async () => {
+  // Cache holds the FULL uncapped official list — the cap is applied fresh
+  // on every read (cheap: an in-memory filter over an already-fetched
+  // array), so the raw full list is always available for name lookups even
+  // though this function's own return value stays capped for callers that
+  // batch-fetch live quotes for everything it returns.
+  const full = await cached("tw-universe-full-raw", TW_UNIVERSE_TTL_MS, async () => {
     try {
       const companies = await fetchTwseListedCompanies();
-      return companies.length > 0 ? capUniverse(companies) : TW_UNIVERSE_SEED;
+      return companies.length > 0 ? companies : TW_UNIVERSE_SEED;
     } catch {
       return TW_UNIVERSE_SEED;
     }
   });
-  twUniverseSnapshot = result;
-  return result;
+  twFullCompanySnapshot = full;
+  nameLookupPool = buildNameLookupPool(full);
+  const capped = capUniverse(full);
+  twUniverseSnapshot = capped;
+  return capped;
 }
 
 export function findInUniverse(symbol: string, market?: Market): UniverseEntry | undefined {
   const upper = symbol.toUpperCase();
-  const pool = market === "US" ? US_UNIVERSE : market === "TW" ? twUniverseSnapshot : [...twUniverseSnapshot, ...US_UNIVERSE];
+  const pool = market === "US" ? US_UNIVERSE : market === "TW" ? twFullCompanySnapshot : [...twFullCompanySnapshot, ...US_UNIVERSE];
   return pool.find((e) => e.symbol.toUpperCase() === upper);
 }
 
@@ -346,8 +386,7 @@ export function findInUniverse(symbol: string, market?: Market): UniverseEntry |
  * company name instead of a ticker/code.
  */
 export function findSymbolByName(text: string): UniverseEntry | undefined {
-  const pool = [...twUniverseSnapshot, ...US_UNIVERSE].sort((a, b) => b.name.length - a.name.length);
-  return pool.find((entry) => entry.name.length >= 2 && text.includes(entry.name));
+  return nameLookupPool.find((entry) => entry.name.length >= 2 && text.includes(entry.name));
 }
 
 export function sectorsFor(market: Market): string[] {

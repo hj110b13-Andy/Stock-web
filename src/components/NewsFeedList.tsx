@@ -151,7 +151,7 @@ function NewsFeedRow({ item, pinned }: { item: NewsFeedItem; pinned?: boolean })
   return (
     <div
       className={`rounded-lg border p-3 ${
-        pinned ? "border-(--accent) bg-(--accent-soft)" : "border-(--gridline) bg-(--surface-1)"
+        pinned ? "border-(--accent) bg-(--highlight-bg)" : "border-(--gridline) bg-(--surface-1)"
       }`}
     >
       <p className="text-sm font-medium text-(--text-primary)">{item.title}</p>

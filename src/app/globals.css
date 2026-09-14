@@ -13,6 +13,13 @@
   --border: rgba(11, 11, 11, 0.1);
   --accent: #2a78d6;
   --accent-soft: #cde2fb;
+  /* For a large highlighted content area (e.g. a pinned news card) rather
+     than a small badge/button — --accent-soft reads fine as a solid fill at
+     badge/button scale, but the same saturated color covering a much bigger
+     area looks garish, especially in dark mode (see the dark block below).
+     Light mode reuses --accent-soft's own value since nothing was reported
+     wrong with it there. */
+  --highlight-bg: var(--accent-soft);
   /* Taiwan/greater-China market convention: red = up, green = down. */
   --price-up: #e34948;
   --price-down: #008300;
@@ -28,6 +35,7 @@
   --color-gridline: var(--gridline);
   --color-accent: var(--accent);
   --color-accent-soft: var(--accent-soft);
+  --color-highlight-bg: var(--highlight-bg);
   --color-price-up: var(--price-up);
   --color-price-down: var(--price-down);
   --font-sans: system-ui, -apple-system, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
@@ -47,6 +55,14 @@
     --border: rgba(255, 255, 255, 0.1);
     --accent: #3987e5;
     --accent-soft: #184f95;
+    /* A user reported the pinned news card's blue "looked bad" in dark mode
+       — --accent-soft's saturated #184f95 is fine at badge/button scale
+       (MarketStatusBadge, ChatWidget's watchlist button) but reads as a
+       jarring, overly-bright block when it fills a whole card. This is a
+       much darker, desaturated navy — only 1.13:1 contrast from --surface-1
+       itself (verified via WCAG luminance formula), i.e. a subtle tint
+       rather than a loud fill — while text on it still clears 8.5:1+. */
+    --highlight-bg: #17253c;
     --price-up: #e66767;
     /* Brightened from the light-mode #008300 — that green's contrast against
        the dark surfaces here is ~3.9:1, under WCAG's 4.5:1 text threshold. */
@@ -67,6 +83,11 @@
   --border: rgba(255, 255, 255, 0.1);
   --accent: #3987e5;
   --accent-soft: #184f95;
+  /* Keep in sync with the @media (prefers-color-scheme: dark) block above —
+     this is the manual dark-mode-toggle variant of the same tokens, and this
+     file has a documented history of the two blocks drifting apart when only
+     one gets updated. */
+  --highlight-bg: #17253c;
   --price-up: #e66767;
   /* Brightened from the light-mode #008300 — that green's contrast against
      the dark surfaces here is ~3.9:1, under WCAG's 4.5:1 text threshold. */

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getNewsFeed } from "@/lib/ai/newsfeed";
+import { getNewsFeed, summarizeItems } from "@/lib/ai/newsfeed";
 
 // Building the pool fans out to a dozen+ Google News requests plus an AI
 // classification call on a cache-cold generation — same reasoning as
@@ -23,7 +23,7 @@ export async function GET(req: NextRequest) {
 
   try {
     const feed = await getNewsFeed(forceRefresh);
-    const page = feed.items.slice(offset, offset + limit);
+    const page = await summarizeItems(feed.items.slice(offset, offset + limit));
     return NextResponse.json({
       pinned: offset === 0 ? feed.pinned : [],
       items: page,
