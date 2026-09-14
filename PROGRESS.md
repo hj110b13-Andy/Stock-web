@@ -330,12 +330,25 @@ component 每 20 秒輪詢，狀態徽章跟資料時間完全依賴後端回傳
    45593點（-0.4%）」這行，且跟大盤指數/新聞其他 grounding 區塊並存不衝突
    （本機沒有設定 AI API key，AI 生成本身沒測到，但 grounding 資料管線本身
    已確認正確）。
-4. 已 push 到 `claude/relaxed-curie-c69kp0`，待確認 Vercel 部署成功後在正式站
-   （有真正的 AI API key）重測一次 `/api/ask` 確認 AI 真的會用這筆資料回答、
-   且正確反映交易中/已收盤狀態，細節見下方（若這則工作日誌後面沒有補寫正式站
-   驗證結果，代表接手的裝置需要補做這一步）。
+4. Push 後用 GitHub commit-status API 確認 Vercel 部署成功（`state: success`），
+   接著在正式站（`https://stock-web-blond.vercel.app`，unlock cookie）實際驗證：
+   - `GET /api/taifex-futures`：`{"quote":{"contractLabel":"台指期（近月，9月合約）",
+     "price":45602,"change":-175,"changePercent":-0.38,"volume":23089,
+     "status":"trading","asOf":"2026/09/14 23:52:34"}}`，跟本機測試同一時段的
+     數字連續一致（本機45591→45593，正式站45602→45603，同一段時間內合理的
+     微幅波動），確認正式站也能正常連到 `mis.taifex.com.tw`（沒有重演 TPEx 那次
+     TLS 中繼憑證缺漏問題，跟研究階段判斷的一致：這裡是 Google Trust Services
+     簽發的標準憑證）。
+   - `POST /api/ask` 問「台指期夜盤現在多少點？」：正式站有真正的 AI API key，
+     `usedAi:true`，AI 回覆「台指期（近月，9月合約）夜盤（夜盤交易中，資料時間
+     2026/09/14 23:52:34）現在是45602點（-0.38%）」——完全根據真實 grounding
+     資料作答，正確帶出交易中狀態跟資料時間，沒有編造或跟現貨指數混淆。
+   - `GET /`（首頁）：SSR 輸出的 React payload 裡確認含有伺服器端抓到的真實
+     `TaifexFuturesQuote`（`contractLabel`/`price`/`status:"trading"` 都對得上
+     同一時間點的 API 回應），確認首頁卡片有拿到真實資料可以渲染。
 
-**還沒派 Opus 規則三獨立複查**——這是使用者這次特別交代由他自己另外派 Opus，
+**已完成規則二自我測試流程（含正式站驗證），還沒派 Opus 規則三獨立複查**——這是
+使用者這次特別交代由他自己另外派 Opus，
 這次對話完成規則二自我測試後就停下來，見下方「目前已知問題」。
 
 ### 2026-09-14：Opus 對整批新功能的獨立複查（規則三）＋字級迴歸修正＋新增費城半導體指數與台指期結算日考量
@@ -1754,14 +1767,14 @@ Google 登入」、聊天輸入框是 `<input>` 不是 `<textarea>`、產業篩�
 
 ## 目前已知問題
 
-- **【2026-09-14 新增，還沒派 Opus 規則三獨立複查，也還沒在正式站驗證】台指期夜盤
-  （近月合約）**：詳見上方工作日誌同日期那則。資料源是 TAIFEX 官方免費看盤網站
-  `mis.taifex.com.tw/futures/`，本機用真實資料驗證過（含跟第三方 BigGo財經交叉
-  核對），`npm run build` 通過，已 push。**接手的裝置如果要回報「更新完成」，
-  記得先做完：(1) 確認 Vercel 部署成功（GitHub commit-status API）(2) 在正式站
-  用 unlock cookie 實際 curl `/api/taifex-futures` 跟 `/api/ask` 驗證真實資料
-  跟 AI 回答 (3) 等使用者另外派 Opus 規則三複查確認沒問題**——這次對話按使用者
-  指示，完成規則二自測後就先停在這裡，沒有繼續走規則三。**已知的資料源限制**：
+- **【2026-09-14 新增，還沒派 Opus 規則三獨立複查】台指期夜盤（近月合約）**：
+  詳見上方工作日誌同日期那則。資料源是 TAIFEX 官方免費看盤網站
+  `mis.taifex.com.tw/futures/`，本機跟正式站都用真實資料驗證過（含跟第三方
+  BigGo財經交叉核對、正式站 `/api/ask` 實測 AI 真的會用這筆資料正確作答），
+  `npm run build` 通過，已 push 且 Vercel 部署成功。**接手的裝置如果要回報
+  「更新完成」，記得等使用者另外派 Opus 規則三複查確認沒問題**——這次對話按
+  使用者指示，完成規則二自測（含正式站驗證）後就先停在這裡，沒有繼續走規則三。
+  **已知的資料源限制**：
   `mis.taifex.com.tw` 這個端點是該網站前端自己的內部 API，不是 TAIFEX 正式對外
   公告的公開 API 規格（不像 TWSE OpenAPI 那樣有官方文件），理論上該網站改版時
   可能連端點名稱或參數格式一起換掉，屆時會需要重新用同樣的手法（下載該網站的
