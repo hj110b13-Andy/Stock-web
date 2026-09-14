@@ -5,33 +5,42 @@ import StockTable from "@/components/StockTable";
 import MarketTabs from "@/components/MarketTabs";
 import MarketStatusBadge from "@/components/MarketStatusBadge";
 import { getMarketStatus } from "@/lib/marketStatus";
-import type { Market, SearchItem } from "@/lib/data";
+import type { Market, SearchItem, VolumeTrend } from "@/lib/data";
 
 // Short enough that a filter toggle still feels instant, long enough that
 // typing a keyword or a price doesn't fire a search per character.
 const SEARCH_DEBOUNCE_MS = 250;
 
-type ChangePreset = "all" | "gainers" | "losers" | "big-gainers" | "big-losers";
+// Quick-fill shortcuts for the customizable min/max change% inputs below —
+// clicking one just populates those inputs (still freely editable
+// afterwards), it's not a separate fixed-choice mechanism of its own.
+const CHANGE_SHORTCUTS: Array<{ label: string; min?: number; max?: number }> = [
+  { label: "全部" },
+  { label: "上漲", min: 0 },
+  { label: "下跌", max: 0 },
+  { label: "漲幅 > 3%", min: 3 },
+  { label: "跌幅 > 3%", max: -3 },
+];
+
+const VOLUME_TREND_OPTIONS: Array<{ value: VolumeTrend; label: string }> = [
+  { value: "buy-leaning", label: "價漲量增（偏多）" },
+  { value: "sell-leaning", label: "價跌量增（偏空）" },
+  { value: "neutral", label: "量能不明顯" },
+];
+
 type SortBy = "changePercent" | "volume" | "price";
 type SortDir = "asc" | "desc";
 
-const CHANGE_PRESETS: Record<ChangePreset, { label: string; min?: number; max?: number }> = {
-  all: { label: "全部" },
-  gainers: { label: "上漲", min: 0 },
-  losers: { label: "下跌", max: 0 },
-  "big-gainers": { label: "漲幅 > 3%", min: 3 },
-  "big-losers": { label: "跌幅 > 3%", max: -3 },
-};
-
 export default function SearchClient() {
   const [query, setQuery] = useState("");
-  const [preset, setPreset] = useState<ChangePreset>("all");
+  const [minChangePercent, setMinChangePercent] = useState("");
+  const [maxChangePercent, setMaxChangePercent] = useState("");
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold">搜尋 / 篩選股票</h1>
-        <p className="mt-1 text-sm text-(--text-secondary)">台股、美股分開顯示，各自可依產業、股價、漲跌幅篩選與排序。</p>
+        <p className="mt-1 text-sm text-(--text-secondary)">台股、美股分開顯示，各自可依產業、股價、成交量、漲跌幅、價量關係篩選與排序。</p>
       </div>
 
       <div className="rounded-lg border border-(--gridline) bg-(--surface-1) p-4 space-y-4">
@@ -44,28 +53,50 @@ export default function SearchClient() {
               className="rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1.5 text-sm w-56"
             />
           </Field>
+
+          <Field label="漲跌幅 %（自訂區間，可只填一邊）">
+            <div className="flex items-center gap-1">
+              <input
+                type="number"
+                inputMode="decimal"
+                placeholder="最低"
+                value={minChangePercent}
+                onChange={(e) => setMinChangePercent(e.target.value)}
+                className="w-20 rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1.5 text-sm"
+              />
+              <span className="text-(--text-muted)">–</span>
+              <input
+                type="number"
+                inputMode="decimal"
+                placeholder="最高"
+                value={maxChangePercent}
+                onChange={(e) => setMaxChangePercent(e.target.value)}
+                className="w-20 rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1.5 text-sm"
+              />
+            </div>
+          </Field>
         </div>
 
         <div className="flex flex-wrap gap-2">
-          {(Object.keys(CHANGE_PRESETS) as ChangePreset[]).map((key) => (
+          {CHANGE_SHORTCUTS.map((s) => (
             <button
-              key={key}
-              onClick={() => setPreset(key)}
-              className={`rounded-full px-3 py-1 text-xs font-medium border ${
-                preset === key
-                  ? "bg-(--accent) text-white border-(--accent)"
-                  : "border-(--gridline) text-(--text-secondary) hover:bg-(--page-plane)"
-              }`}
+              key={s.label}
+              onClick={() => {
+                setMinChangePercent(s.min !== undefined ? String(s.min) : "");
+                setMaxChangePercent(s.max !== undefined ? String(s.max) : "");
+              }}
+              className="rounded-full px-3 py-1 text-xs font-medium border border-(--gridline) text-(--text-secondary) hover:bg-(--page-plane)"
+              title="快速套用到左邊的自訂區間，套用後仍可自行修改"
             >
-              {CHANGE_PRESETS[key].label}
+              {s.label}
             </button>
           ))}
         </div>
       </div>
 
       <MarketTabs
-        tw={<MarketSection market="TW" query={query} preset={preset} />}
-        us={<MarketSection market="US" query={query} preset={preset} />}
+        tw={<MarketSection market="TW" query={query} minChangePercent={minChangePercent} maxChangePercent={maxChangePercent} />}
+        us={<MarketSection market="US" query={query} minChangePercent={minChangePercent} maxChangePercent={maxChangePercent} />}
       />
     </div>
   );
@@ -74,15 +105,20 @@ export default function SearchClient() {
 function MarketSection({
   market,
   query,
-  preset,
+  minChangePercent,
+  maxChangePercent,
 }: {
   market: Market;
   query: string;
-  preset: ChangePreset;
+  minChangePercent: string;
+  maxChangePercent: string;
 }) {
   const [sectors, setSectors] = useState<string[]>([]);
   const [minPrice, setMinPrice] = useState("");
   const [maxPrice, setMaxPrice] = useState("");
+  const [minVolume, setMinVolume] = useState("");
+  const [maxVolume, setMaxVolume] = useState("");
+  const [volumeTrends, setVolumeTrends] = useState<VolumeTrend[]>([]);
   const [sortBy, setSortBy] = useState<SortBy>("changePercent");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [items, setItems] = useState<SearchItem[] | null>(null);
@@ -107,11 +143,13 @@ function MarketSection({
     if (query) params.set("q", query);
     if (minPrice) params.set("minPrice", minPrice);
     if (maxPrice) params.set("maxPrice", maxPrice);
-    const cfg = CHANGE_PRESETS[preset];
-    if (cfg.min !== undefined) params.set("min", String(cfg.min));
-    if (cfg.max !== undefined) params.set("max", String(cfg.max));
+    if (minVolume) params.set("minVolume", minVolume);
+    if (maxVolume) params.set("maxVolume", maxVolume);
+    if (volumeTrends.length > 0) params.set("volumeTrends", volumeTrends.join(","));
+    if (minChangePercent) params.set("min", minChangePercent);
+    if (maxChangePercent) params.set("max", maxChangePercent);
 
-    // Debounced: the keyword and price boxes re-run this on every
+    // Debounced: the keyword and number boxes re-run this on every
     // keystroke, so typing "2330" used to fire four full searches (and
     // typing a price, one per digit) — each one re-filtering the whole
     // universe server-side — with only the last result ever displayed.
@@ -126,16 +164,22 @@ function MarketSection({
       clearTimeout(timer);
       controller.abort();
     };
-  }, [market, sectors, query, preset, minPrice, maxPrice, sortBy, sortDir]);
+  }, [market, sectors, query, minChangePercent, maxChangePercent, minPrice, maxPrice, minVolume, maxVolume, volumeTrends, sortBy, sortDir]);
 
   function toggleSector(s: string) {
     setSectors((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]));
+  }
+
+  function toggleVolumeTrend(t: VolumeTrend) {
+    setVolumeTrends((prev) => (prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]));
   }
 
   return (
     <div className="rounded-lg border border-(--gridline) bg-(--surface-1) p-4 space-y-3">
       <div className="flex flex-wrap items-center justify-end gap-2">
         <SectorMultiSelect options={sectorOptions} selected={sectors} onToggle={toggleSector} onClear={() => setSectors([])} />
+
+        <VolumeTrendMultiSelect selected={volumeTrends} onToggle={toggleVolumeTrend} onClear={() => setVolumeTrends([])} />
 
         <div className="flex items-center gap-1">
           <input
@@ -154,6 +198,26 @@ function MarketSection({
             value={maxPrice}
             onChange={(e) => setMaxPrice(e.target.value)}
             className="w-20 rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1 text-xs"
+          />
+        </div>
+
+        <div className="flex items-center gap-1" title="成交量門檻，台股單位為「股」（例如 10000000 = 1萬張）">
+          <input
+            type="number"
+            inputMode="numeric"
+            placeholder="最低量(股)"
+            value={minVolume}
+            onChange={(e) => setMinVolume(e.target.value)}
+            className="w-24 rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1 text-xs"
+          />
+          <span className="text-(--text-muted)">–</span>
+          <input
+            type="number"
+            inputMode="numeric"
+            placeholder="最高量(股)"
+            value={maxVolume}
+            onChange={(e) => setMaxVolume(e.target.value)}
+            className="w-24 rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1 text-xs"
           />
         </div>
 
@@ -193,6 +257,41 @@ function MarketSection({
         </>
       )}
     </div>
+  );
+}
+
+function VolumeTrendMultiSelect({
+  selected,
+  onToggle,
+  onClear,
+}: {
+  selected: VolumeTrend[];
+  onToggle: (t: VolumeTrend) => void;
+  onClear: () => void;
+}) {
+  return (
+    <details className="relative">
+      <summary className="cursor-pointer list-none rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1 text-xs">
+        價量關係{selected.length > 0 ? `（已選 ${selected.length}）` : "：全部"}
+      </summary>
+      <div className="absolute right-0 z-20 mt-1 w-64 rounded-md border border-(--gridline) bg-(--surface-1) p-2 shadow-lg">
+        <div className="mb-1 flex items-center justify-between">
+          <span className="text-[11px] text-(--text-muted)">多選；依「今日量 vs 自身近期均量」推論</span>
+          <button onClick={onClear} className="text-[11px] text-(--accent) hover:underline">
+            清除
+          </button>
+        </div>
+        {VOLUME_TREND_OPTIONS.map((opt) => (
+          <label key={opt.value} className="flex items-center gap-1.5 rounded px-1 py-1 text-xs hover:bg-(--page-plane)">
+            <input type="checkbox" checked={selected.includes(opt.value)} onChange={() => onToggle(opt.value)} />
+            {opt.label}
+          </label>
+        ))}
+        <p className="mt-1 border-t border-(--gridline) pt-1 text-[11px] text-(--text-muted)">
+          這是傳統技術分析的價量關係推論（價漲/跌量增），不是真實的委買委賣單成交量統計。
+        </p>
+      </div>
+    </details>
   );
 }
 

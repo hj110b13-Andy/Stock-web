@@ -34,6 +34,17 @@ export interface ChartResponse {
 
 export type ChartRange = "5d" | "10d" | "1m" | "3m" | "6m" | "1y" | "2y" | "5y" | "10y";
 
+/**
+ * 價量關係推論的三種結果——**不是真實委買委賣單成交量分類**（本站沒有那種逐筆
+ * 成交/內外盤資料來源，見 SearchItem.volumeTrend 的完整說明）：
+ * - "buy-leaning"：今日股價上漲，且成交量明顯高於這檔股票自己近期均量（傳統技術
+ *   分析講的「價漲量增」，籌碼面偏多的常見判讀）
+ * - "sell-leaning"：今日股價下跌，且成交量明顯高於自身近期均量（「價跌量增」，
+ *   偏空的常見判讀）
+ * - "neutral"：量能沒有明顯高於均量，或均量資料不足，沒有可下判斷的訊號
+ */
+export type VolumeTrend = "buy-leaning" | "sell-leaning" | "neutral";
+
 export interface SearchItem {
   symbol: string;
   market: Market;
@@ -42,6 +53,21 @@ export interface SearchItem {
   price: number;
   changePercent: number;
   volume: number;
+  /**
+   * 今日成交量 ÷ 這檔股票自己近期（最多20個交易日，不含今日）平均成交量。
+   * 均量資料不足（新股剛掛牌、或站上還沒累積到至少5個交易日的歷史）時為
+   * undefined——沒有基準可比較，不代入任何假設值。
+   */
+  volumeRatio?: number;
+  /**
+   * 價量關係推論（見上方 VolumeTrend 型別說明）：根據「今日量 vs 這檔股票自己近期
+   * 均量」＋「今日漲跌方向」推論出的傳統技術分析價量關係，是一種歷史悠久的看盤
+   * 經驗法則，**不是真實的委買委賣單成交量統計**——台股/美股都沒有公開、免費、
+   * 提供逐筆成交方向（內外盤）分類的資料源，所以本站不會、也不能算出「今天成交量
+   * 裡有多少真的是用市價買、多少是用市價賣」這種真正的買賣單量能數字。UI 顯示這個
+   * 欄位時務必連同這個限制一起呈現，不能讓使用者誤以為是真實的買賣單統計。
+   */
+  volumeTrend: VolumeTrend;
 }
 
 export interface IndexQuote {

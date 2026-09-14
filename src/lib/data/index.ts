@@ -25,6 +25,8 @@ import {
 } from "./tpex";
 import { fetchUsCandles, fetchUsEarnings, fetchUsFundamentals, fetchUsQuote, fetchUsQuotesBatch } from "./us";
 import { computeSignals, type Signal } from "@/lib/signals";
+import { computeVolumeMetrics, getTrailingAverageVolumeMap, maybeRecordDailyVolumeSnapshot } from "./volumeHistory";
+import type { VolumeTrend } from "./types";
 
 export * from "./types";
 export { sectorsFor, getTwUniverse, findSymbolByName, findAllSymbolsByName, findInUniverse } from "./universe";
@@ -383,6 +385,15 @@ async function fetchMarketQuoteMap(market: Market): Promise<Map<string, Quote>> 
     }
   }
 
+  // Fire-and-forget, piggybacked on this same batch fetch rather than a
+  // separate schedule or per-symbol call — see volumeHistory.ts for why this
+  // is the "compute the whole-market volume trend cheaply" design: it's a
+  // small conditional Redis read+write, not an extra upstream request, and
+  // it internally no-ops except once per real trading day. Never awaited so
+  // it can't add latency to (or, via its own try/catch, ever fail) this
+  // already-expensive batch quote fetch.
+  void maybeRecordDailyVolumeSnapshot(market, map);
+
   return map;
 }
 
@@ -414,6 +425,14 @@ export interface SearchFilters {
   maxChangePercent?: number;
   minPrice?: number;
   maxPrice?: number;
+  minVolume?: number;
+  maxVolume?: number;
+  /**
+   * 多選，跟 `sectors` 同一套「不衝突條件可以複選」的設計：不傳或空陣列＝不篩選；
+   * 傳了就只保留 volumeTrend 落在這個集合裡的股票。見 types.ts 的 VolumeTrend /
+   * SearchItem.volumeTrend 說明——這是價量關係推論，不是真實買賣單量能分類。
+   */
+  volumeTrends?: VolumeTrend[];
   sortBy?: "changePercent" | "volume" | "price";
   sortDir?: "asc" | "desc";
 }
@@ -434,16 +453,26 @@ export async function searchStocks(filters: SearchFilters): Promise<SearchItem[]
   }
 
   const marketsNeeded = [...new Set(pool.map((e) => e.market))];
-  const quoteMaps = await Promise.all(marketsNeeded.map((m) => getMarketQuoteMap(m)));
+  const [quoteMaps, avgVolumeMaps] = await Promise.all([
+    Promise.all(marketsNeeded.map((m) => getMarketQuoteMap(m))),
+    // Cheap (peekCached, read-only — see volumeHistory.ts): never triggers a
+    // fresh computation, just reads whatever the batch-quote piggyback has
+    // already accumulated. A market with no history yet just yields an
+    // empty map, and every item's volumeTrend falls back to "neutral".
+    Promise.all(marketsNeeded.map((m) => getTrailingAverageVolumeMap(m))),
+  ]);
   const quoteBySymbol = new Map<string, Quote>();
+  const avgVolumeBySymbol = new Map<string, number>();
   marketsNeeded.forEach((m, i) => {
     for (const [symbol, quote] of quoteMaps[i]) quoteBySymbol.set(`${m}:${symbol}`, quote);
+    for (const [symbol, avg] of avgVolumeMaps[i]) avgVolumeBySymbol.set(`${m}:${symbol}`, avg);
   });
 
   let items: SearchItem[] = pool
     .map((entry): SearchItem | null => {
       const q = quoteBySymbol.get(`${entry.market}:${entry.symbol}`);
       if (!q) return null;
+      const avgVolume = avgVolumeBySymbol.get(`${entry.market}:${entry.symbol}`);
       return {
         symbol: entry.symbol,
         market: entry.market,
@@ -452,6 +481,7 @@ export async function searchStocks(filters: SearchFilters): Promise<SearchItem[]
         price: q.price,
         changePercent: q.changePercent,
         volume: q.volume,
+        ...computeVolumeMetrics(q.changePercent, q.volume, avgVolume),
       };
     })
     .filter((i): i is SearchItem => i !== null);
@@ -467,6 +497,16 @@ export async function searchStocks(filters: SearchFilters): Promise<SearchItem[]
   }
   if (filters.maxPrice !== undefined) {
     items = items.filter((i) => i.price <= filters.maxPrice!);
+  }
+  if (filters.minVolume !== undefined) {
+    items = items.filter((i) => i.volume >= filters.minVolume!);
+  }
+  if (filters.maxVolume !== undefined) {
+    items = items.filter((i) => i.volume <= filters.maxVolume!);
+  }
+  if (filters.volumeTrends && filters.volumeTrends.length > 0) {
+    const wantedTrends = new Set(filters.volumeTrends);
+    items = items.filter((i) => wantedTrends.has(i.volumeTrend));
   }
 
   const sortBy = filters.sortBy ?? "changePercent";
@@ -521,6 +561,7 @@ export async function getMultiSignalStocks(market: Market, minSignals = 2): Prom
   return cached(`momentum:${market}:${minSignals}`, MOMENTUM_TTL_MS, async () => {
     const pool = await universeFor(market);
     const quoteMap = await getMarketQuoteMap(market);
+    const avgVolumeMap = await getTrailingAverageVolumeMap(market);
 
     const candidates = pool
       .filter((entry) => quoteMap.has(entry.symbol))
@@ -547,6 +588,7 @@ export async function getMultiSignalStocks(market: Market, minSignals = 2): Prom
           price: quote.price,
           changePercent: quote.changePercent,
           volume: quote.volume,
+          ...computeVolumeMetrics(quote.changePercent, quote.volume, avgVolumeMap.get(entry.symbol)),
           signals,
         };
       }

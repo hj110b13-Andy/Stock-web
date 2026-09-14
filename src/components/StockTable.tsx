@@ -43,7 +43,23 @@ export default function StockTable({ items, emptyLabel }: { items: SearchItem[];
               <td className={`py-2.5 pr-4 text-right font-medium tabular-nums ${priceDirectionClass(item.changePercent)}`}>
                 {formatPercent(item.changePercent)}
               </td>
-              <td className="py-2.5 pr-4 text-right tabular-nums text-(--text-secondary)">{formatVolume(item.volume, item.market)}</td>
+              <td className="py-2.5 pr-4 text-right tabular-nums text-(--text-secondary)">
+                {formatVolume(item.volume, item.market)}
+                {item.volumeTrend !== "neutral" && (
+                  <span
+                    className={`ml-1.5 inline-block rounded-full px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap ${
+                      item.volumeTrend === "buy-leaning" ? "bg-(--price-up)/10 text-(--price-up)" : "bg-(--price-down)/10 text-(--price-down)"
+                    }`}
+                    title={`成交量約為近20個交易日均量的 ${item.volumeRatio?.toFixed(1)} 倍，且股價${
+                      item.volumeTrend === "buy-leaning" ? "上漲" : "下跌"
+                    }。這是「今日量 vs 這檔股票自己近期均量」＋漲跌方向推論出的傳統價量關係判讀（價${
+                      item.volumeTrend === "buy-leaning" ? "漲" : "跌"
+                    }量增），不是真實的委買委賣單成交量統計——台股/美股都沒有公開的逐筆成交方向資料源。`}
+                  >
+                    {item.volumeTrend === "buy-leaning" ? "價漲量增" : "價跌量增"}
+                  </span>
+                )}
+              </td>
             </tr>
           ))}
         </tbody>
