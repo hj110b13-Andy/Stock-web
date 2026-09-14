@@ -1,4 +1,4 @@
-import { cached } from "./cache";
+import { peekCached, writeCached } from "./cache";
 import type { Market } from "./types";
 
 export interface UniverseEntry {
@@ -389,6 +389,38 @@ function capUniverse(companies: UniverseEntry[]): UniverseEntry[] {
   return [...capOne(twse, TW_UNIVERSE_SEED, MAX_TWSE_UNIVERSE), ...capOne(tpex, [], MAX_TPEX_UNIVERSE)];
 }
 
+// "-v4": this key's SHAPE changed when TPEx was merged in (TWSE-only ->
+// TWSE+TPEx) — bumping the key (same pattern as news-feed:v1 -> v2
+// elsewhere in this codebase) forces every instance to recompute on next
+// read instead of serving whatever pre-TPEx list this key already holds in
+// Redis for up to its full 24h TTL. Went through v2 and v3 first: v2 was
+// bumped when TPEx first merged in, but real traffic hit (and cached, for
+// the full 24h TTL) a TWSE-only result in the window before
+// fetchTpexListedCompanies' reliability was actually fixed; v3 was bumped
+// right after that fix landed, but got unlucky and ALSO cached a TWSE-only
+// result on its very first computation (the ~1MB company-listing fetch can
+// still fail outright even with a large byte-resume budget). That second
+// poisoning is what motivated the asymmetric-TTL logic below — from v4
+// onward, a degraded (TPEx-empty) result is no longer trusted with the
+// full 24h TTL a genuine success deserves.
+const TW_UNIVERSE_CACHE_KEY = "tw-universe-full-raw-v4";
+// How long a DEGRADED (TPEx came back empty — meaning its fetch almost
+// certainly failed, since a real company listing is never actually empty)
+// merge result is trusted before the next request gets a fresh attempt.
+// Deliberately much shorter than TW_UNIVERSE_TTL_MS: a genuine 24h-cacheable
+// success and "we don't have TPEx data yet, retry soon" are different
+// enough situations that they shouldn't share a TTL.
+const TW_UNIVERSE_DEGRADED_TTL_MS = 5 * 60_000;
+
+// Single-flight guard for the (relatively expensive, whole-market) compute
+// below — getTwUniverse() is called on most search/chat/momentum requests,
+// and without this, several concurrent cache-miss callers would each kick
+// off their own redundant TWSE+TPEx fetch. peekCached/writeCached (unlike
+// cached()) don't provide this on their own, since they're the "read what's
+// there, or compute-and-write-with-a-chosen-TTL" building blocks used here
+// specifically to support the asymmetric TTL above.
+let universeComputePromise: Promise<UniverseEntry[]> | undefined;
+
 export async function getTwUniverse(): Promise<UniverseEntry[]> {
   const { fetchTwseListedCompanies } = await import("./twse");
   const { fetchTpexListedCompanies } = await import("./tpex");
@@ -404,32 +436,33 @@ export async function getTwUniverse(): Promise<UniverseEntry[]> {
   // merging the two: TW stock codes are allocated from one shared national
   // registry, TWSE and TPEx never reuse the same code for different
   // companies.
-  // "-v3": this key's SHAPE changed when TPEx was merged in (TWSE-only ->
-  // TWSE+TPEx) — bumping the key (same pattern as news-feed:v1 -> v2
-  // elsewhere in this codebase) forces every instance to recompute on next
-  // read instead of serving whatever pre-TPEx list this key already holds
-  // in Redis for up to its full 24h TTL. Went through v2 first, but real
-  // traffic hit (and cached, for the full 24h TTL) a TWSE-only result under
-  // that key in the window between merging TPEx in and actually fixing
-  // fetchTpexListedCompanies' reliability (see tpex.ts's
-  // TPEX_MAX_RESUME_ATTEMPTS history) — so v2 itself ended up poisoned with
-  // exactly the stale shape this versioning was meant to avoid. Bumped
-  // again to v3 now that the underlying fetch is actually reliable, so this
-  // key starts clean. Lesson: bump the version again any time a fix lands
-  // that changes what a given key's freshly-computed value would contain,
-  // not just once when the shape first changes — an intermediate broken
-  // deploy can just as easily poison a "new" versioned key as an old one.
-  const full = await cached("tw-universe-full-raw-v3", TW_UNIVERSE_TTL_MS, async () => {
-    const [twse, tpex] = await Promise.all([
-      fetchTwseListedCompanies().catch(() => []),
-      fetchTpexListedCompanies().catch(() => []),
-    ]);
-    // TWSE failing outright falls back to the hand-curated (all-TWSE) seed
-    // as before — TPEx succeeding independently must never be the reason
-    // every TWSE stock silently vanishes from the universe.
-    const twseFinal = twse.length > 0 ? twse : TW_UNIVERSE_SEED;
-    return [...twseFinal, ...tpex];
-  });
+  const cachedValue = await peekCached<UniverseEntry[]>(TW_UNIVERSE_CACHE_KEY);
+  let full: UniverseEntry[];
+  if (cachedValue) {
+    full = cachedValue;
+  } else if (universeComputePromise) {
+    full = await universeComputePromise;
+  } else {
+    universeComputePromise = (async () => {
+      const [twse, tpex] = await Promise.all([
+        fetchTwseListedCompanies().catch(() => []),
+        fetchTpexListedCompanies().catch(() => []),
+      ]);
+      // TWSE failing outright falls back to the hand-curated (all-TWSE) seed
+      // as before — TPEx succeeding independently must never be the reason
+      // every TWSE stock silently vanishes from the universe.
+      const twseFinal = twse.length > 0 ? twse : TW_UNIVERSE_SEED;
+      const merged = [...twseFinal, ...tpex];
+      const ttl = tpex.length > 0 ? TW_UNIVERSE_TTL_MS : TW_UNIVERSE_DEGRADED_TTL_MS;
+      await writeCached(TW_UNIVERSE_CACHE_KEY, merged, ttl);
+      return merged;
+    })();
+    try {
+      full = await universeComputePromise;
+    } finally {
+      universeComputePromise = undefined;
+    }
+  }
   twFullCompanySnapshot = full;
   nameLookupPool = buildNameLookupPool(full);
   const capped = capUniverse(full);

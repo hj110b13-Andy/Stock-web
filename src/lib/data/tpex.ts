@@ -127,9 +127,30 @@ function tpexHttpsGet(url: string, headers: Record<string, string>, timeoutMs: n
   });
 }
 
+// Whole-fetch-from-scratch retries, ON TOP OF fetchTpexFullBody's own
+// byte-level resume logic below — belt-and-braces for the rare case where
+// even a generous resume budget doesn't land a parseable body (e.g. the
+// resume itself keeps hitting resets, or the server serves genuinely
+// inconsistent content across attempts so byte-offsets stop lining up).
+// Confirmed live this matters: the ~1MB company listing fetch failed
+// outright at least once even with a 25-resume-attempt budget, and that
+// single failure was enough to get cached as "TPEx has 0 companies" for a
+// full 24h (see getTwUniverse's asymmetric-TTL comment). Every endpoint
+// this module fetches is called at most a few times per cache TTL (minutes
+// to a day), so 2 extra full retries costs nothing that matters.
+const TPEX_JSON_RETRIES = 2;
+
 async function fetchTpexJson<T>(url: string, timeoutMs = 8000): Promise<T> {
-  const text = await fetchTpexFullBody(url, timeoutMs);
-  return JSON.parse(text) as T;
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= TPEX_JSON_RETRIES; attempt++) {
+    try {
+      const text = await fetchTpexFullBody(url, timeoutMs);
+      return JSON.parse(text) as T;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr;
 }
 
 /**
