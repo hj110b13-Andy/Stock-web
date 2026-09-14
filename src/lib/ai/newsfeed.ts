@@ -141,6 +141,31 @@ interface StoredSummary {
   kind: "fulltext" | "headline";
 }
 
+// Strips the punctuation/spacing that AI echoes back inconsistently (full-
+// width vs half-width brackets, separators publishers append like "｜熱門話題")
+// so a headline the model quoted back can still be matched against the real
+// one it was given.
+function normalizeTitle(value: string): string {
+  return value
+    .replace(/\s+/g, "")
+    .replace(/[｜|【】[\]（）()「」『』《》〈〉—–\-_·、,，。.!！?？:：;；"'“”‘’]/g, "")
+    .toLowerCase();
+}
+
+// True when two headlines are plausibly the same one. Compares on the shorter
+// string's leading 12 characters because summarizeBatch only asks the model to
+// echo back a prefix, and publishers' own titles often carry trailing section
+// names the model drops.
+function titlesMatch(a: string, b: string): boolean {
+  const x = normalizeTitle(a);
+  const y = normalizeTitle(b);
+  if (!x || !y) return false;
+  const shorter = x.length <= y.length ? x : y;
+  const longer = x.length <= y.length ? y : x;
+  const probe = shorter.slice(0, 12);
+  return probe.length >= 4 && longer.includes(probe);
+}
+
 /**
  * Fills in `summary`/`summaryKind` for regular (non-pinned) feed items — a
  * user asked for every item to have one, not just the AI-curated pinned
@@ -177,7 +202,13 @@ export async function summarizeItems(items: NewsFeedItem[]): Promise<NewsFeedIte
   // silently producing an item with summary=undefined forever until its
   // old TTL expires. Exactly the same bumped-cache-key pattern getNewsFeed
   // already uses below (news-feed:v1 -> v2) for the same reason.
-  const cacheKey = (id: string) => `news-item-summary:v2:${id}`;
+  // Bumped to v3 (v2's reason is above): v2 entries were written before
+  // summarizeBatch verified the model's numbering against the echoed title, so
+  // some cached summaries belong to a different article than the item they're
+  // stored under. Those are already in production Redis with a 12h TTL and
+  // can't be selectively evicted, and serving a wrong-article summary is the
+  // one failure mode worth paying a full recompute to end immediately.
+  const cacheKey = (id: string) => `news-item-summary:v3:${id}`;
   const peeked = await Promise.all(candidates.map((item) => peekCached<StoredSummary>(cacheKey(item.id))));
 
   const missing: NewsFeedItem[] = [];
@@ -223,7 +254,8 @@ async function summarizeBatch(items: NewsFeedItem[], fullTextById: Map<string, s
     "你是財經新聞編輯，針對下面清單裡的每一則新聞，用繁體中文寫一句話（40字以內）白話說明重點，讓完全沒有股票背景的人也能一眼看懂，不要加上投資建議。",
     "清單裡每一則如果附有「【全文摘錄】」段落，那是這篇新聞實際的內文開頭，請根據這段實際內容寫摘要（可以引用內文提到的具體數字、原因、影響等實質細節），不要只是換句話重複標題。",
     "如果某一則沒有附「【全文摘錄】」（只有標題），才依標題本身合理描述大意，這種情況本來就只能做到換句話說明標題，不用假裝有更多資訊。",
-    '只能回傳一個 JSON 陣列本身，每個元素是 {"index": 編號, "summary": "重點摘要"}，順序或數量不用跟輸入一致，每一則清單裡的新聞都要有對應的一筆，不要有其他文字、說明或 markdown code block 標記。',
+    '只能回傳一個 JSON 陣列本身，每個元素是 {"index": 編號, "title": "那一則新聞標題的前12個字", "summary": "重點摘要"}，順序或數量不用跟輸入一致，每一則清單裡的新聞都要有對應的一筆，不要有其他文字、說明或 markdown code block 標記。',
+    "「title」欄位務必原封不動抄下那一則新聞標題開頭的文字（不要翻譯、不要改寫），這是用來確認你的摘要有對到正確的那一則新聞。",
   ].join("\n");
 
   try {
@@ -246,7 +278,27 @@ async function summarizeBatch(items: NewsFeedItem[], fullTextById: Map<string, s
         typeof entry.summary === "string" &&
         entry.summary.trim().length > 0
       ) {
-        const item = items[entry.index];
+        // The model numbers these itself, and it demonstrably miscounts when
+        // the list interleaves long 【全文摘錄】 blocks between headlines —
+        // production served a simplywall.st AI-chip story carrying a summary
+        // about 國泰金's GDP forecast (a different item entirely). A wrong
+        // summary is worse than none here: it reads as a confidently
+        // fabricated account of an article nobody wrote. So the echoed title
+        // decides which item this summary really belongs to, and the model's
+        // own index is only trusted when it has no title to check against
+        // (older/uncooperative responses stay on the previous behaviour
+        // rather than losing every summary).
+        const echoed = typeof entry.title === "string" ? entry.title.trim() : "";
+        let target = entry.index as number;
+        if (echoed) {
+          if (!titlesMatch(items[target].title, echoed)) {
+            const found = items.findIndex((it) => titlesMatch(it.title, echoed));
+            if (found < 0) continue;
+            target = found;
+          }
+        }
+        const item = items[target];
+        if (map.has(item.id)) continue;
         map.set(item.id, {
           summary: entry.summary.trim().slice(0, SUMMARY_MAX_LEN),
           kind: fullTextById.has(item.id) ? "fulltext" : "headline",
