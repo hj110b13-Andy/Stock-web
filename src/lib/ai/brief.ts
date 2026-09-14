@@ -10,17 +10,28 @@ export interface DailyBrief {
   generatedAt: string;
 }
 
-// AI calls are relatively slow/rate-limited, and this content is meant to
-// feel like a "daily" wrap rather than something recomputed on every page
-// view. Keyed by Taiwan-local calendar date so it's generated once per day
-// (a Vercel Cron job pre-warms it each morning — see api/cron/daily-brief)
-// and stays stable for everyone visiting that day instead of rolling every
-// 20 minutes.
-const BRIEF_TTL_MS = 25 * 60 * 60_000; // outlives a day; the date-keyed cache key is what actually rotates it
-
-function todayKeyTaipei(): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei" }).format(new Date());
-}
+// Originally date-keyed and cached for ~25h (generated once each morning by
+// api/cron/daily-brief, before TW market open) so it read as a stable "daily"
+// wrap instead of rolling every 20 minutes like actionBrief.ts. In practice
+// that meant the whole day's content — including "台股加權指數今日..." —
+// was frozen at whatever the market looked like around 08:50am, before the
+// TW session even opened, and stayed stuck there (both the content and the
+// "更新於 08:50" timestamp shown in DailyBriefCard) through the entire TW
+// session, the US session that evening, and every actual market move in
+// between. A user reported the displayed update time looking stale for
+// exactly this reason.
+//
+// Switched to a plain rolling TTL (like actionBrief.ts, just longer — this
+// prompt is bigger/more expensive, ~550-800 words vs 200-350, so refreshing
+// every 20 minutes the same way would be wasteful) so the content actually
+// catches up with the day as it happens: pre-market, after the TW close,
+// and again after the US close all naturally get their own regeneration
+// instead of one frozen morning snapshot. warm-cache's cron (every ~5 min,
+// see .github/workflows/warm-cache.yml) now also calls getDailyBrief(), so
+// this still regenerates in the background right after the TTL lapses
+// rather than making whoever visits next wait on a live AI call.
+const BRIEF_TTL_MS = 3 * 60 * 60_000;
+const BRIEF_CACHE_KEY = "daily-brief:v2"; // v2: dropped the per-date key when this moved to a rolling TTL
 
 function listStocks(items: Array<{ name: string; symbol: string; changePercent: number }>): string {
   return items.map((i) => `${i.name}(${i.symbol})：${i.changePercent >= 0 ? "+" : ""}${i.changePercent}%`).join("、");
@@ -49,7 +60,7 @@ async function buildTwChipsSummary(
 }
 
 export async function getDailyBrief(forceRefresh = false): Promise<DailyBrief> {
-  return cached(`daily-brief:${todayKeyTaipei()}`, BRIEF_TTL_MS, async () => {
+  return cached(BRIEF_CACHE_KEY, BRIEF_TTL_MS, async () => {
     const [indices, twGainers, usGainers, twLosers, usLosers, twMomentum, usMomentum, twNews, usNews] =
       await Promise.all([
         getIndices(),

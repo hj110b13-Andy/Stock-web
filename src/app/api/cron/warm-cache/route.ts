@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getIndices, getMultiSignalStocks, searchStocks } from "@/lib/data";
+import { getDailyBrief } from "@/lib/ai/brief";
 
 // Triggered every few minutes by an external scheduler (see
 // .github/workflows/warm-cache.yml — Vercel's own Cron is limited to once a
@@ -11,6 +12,13 @@ import { getIndices, getMultiSignalStocks, searchStocks } from "@/lib/data";
 // and the technical-signal screen (MOMENTUM_TTL_MS, 10 min) for both
 // markets. Optionally protected by CRON_SECRET, same convention as
 // api/cron/daily-brief.
+//
+// Also calls getDailyBrief() now that brief.ts moved from a once-a-day
+// (~25h) cache to a rolling 3h TTL — without a periodic warm-up, the first
+// visitor after each 3h window lapses would be the one stuck waiting on a
+// live ~25s AI call instead of getting an already-computed result.
+export const maxDuration = 60; // getDailyBrief's AI call can take up to ~25s, well past the Node default
+
 export async function GET(req: NextRequest) {
   const secret = process.env.CRON_SECRET;
   if (secret) {
@@ -27,6 +35,12 @@ export async function GET(req: NextRequest) {
       getMultiSignalStocks("TW"),
       getMultiSignalStocks("US"),
       getIndices(),
+      getDailyBrief().catch((err) => {
+        // Same philosophy as api/cron/daily-brief's own try/catch: a failed
+        // brief warm-up isn't this whole cron run's problem to fail on —
+        // real visitors still get it lazily, just possibly slower.
+        console.error("[cron] warm-cache: daily brief warm-up failed:", err);
+      }),
     ]);
     return NextResponse.json({ ok: true, warmedAt: new Date().toISOString() });
   } catch (err) {
