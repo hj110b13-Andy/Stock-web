@@ -4,16 +4,18 @@ import MarketTabs from "@/components/MarketTabs";
 import WatchlistSection from "@/components/WatchlistSection";
 import DailyBriefCard from "@/components/DailyBriefCard";
 import LiveIndices from "@/components/LiveIndices";
+import TaifexFuturesCard from "@/components/TaifexFuturesCard";
 import MarketStatusBadge from "@/components/MarketStatusBadge";
-import { getIndices, searchStocks } from "@/lib/data";
+import { getIndices, getTaifexNightFutures, searchStocks } from "@/lib/data";
 import type { Market, SearchItem } from "@/lib/data";
 import { getMarketStatus } from "@/lib/marketStatus";
 
 export const revalidate = 0;
 
 export default async function HomePage() {
-  const [indices, twMovers, usMovers] = await Promise.all([
+  const [indices, taifexFutures, twMovers, usMovers] = await Promise.all([
     getIndices(),
+    getTaifexNightFutures(),
     searchStocks({ market: "TW", sortBy: "changePercent", sortDir: "desc" }),
     searchStocks({ market: "US", sortBy: "changePercent", sortDir: "desc" }),
   ]);
@@ -65,7 +67,12 @@ export default async function HomePage() {
       <section>
         <h2 className="mb-3 text-lg font-semibold">大盤指數</h2>
         <MarketTabs
-          tw={<LiveIndices market="TW" initialIndices={twIndices} />}
+          tw={
+            <div className="space-y-3">
+              <LiveIndices market="TW" initialIndices={twIndices} />
+              <TaifexFuturesCard initialQuote={taifexFutures} />
+            </div>
+          }
           us={<LiveIndices market="US" initialIndices={usIndices} />}
         />
       </section>

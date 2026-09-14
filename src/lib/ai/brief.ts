@@ -1,5 +1,5 @@
 import { cached } from "@/lib/data/cache";
-import { getIndices, searchStocks, getMultiSignalStocks, getChips } from "@/lib/data";
+import { describeTaifexNightFutures, getIndices, getTaifexNightFutures, searchStocks, getMultiSignalStocks, getChips } from "@/lib/data";
 import { fetchNews, fetchUsMarketNews } from "@/lib/data/news";
 import { formatSharesWithLots } from "@/lib/format";
 import { callAiProviders } from "@/lib/ai/provider";
@@ -67,9 +67,10 @@ async function buildTwChipsSummary(
 
 export async function getDailyBrief(forceRefresh = false): Promise<DailyBrief> {
   return cached(BRIEF_CACHE_KEY, BRIEF_TTL_MS, async () => {
-    const [indices, twGainers, usGainers, twLosers, usLosers, twMomentum, usMomentum, twNews, usNews] =
+    const [indices, taifexFutures, twGainers, usGainers, twLosers, usLosers, twMomentum, usMomentum, twNews, usNews] =
       await Promise.all([
         getIndices(),
+        getTaifexNightFutures().catch(() => null),
         searchStocks({ market: "TW", sortBy: "changePercent", sortDir: "desc" }),
         searchStocks({ market: "US", sortBy: "changePercent", sortDir: "desc" }),
         searchStocks({ market: "TW", sortBy: "changePercent", sortDir: "asc" }),
@@ -91,6 +92,7 @@ export async function getDailyBrief(forceRefresh = false): Promise<DailyBrief> {
       indices.length > 0
         ? indices.map((i) => `${i.name}：${i.price}（${i.change >= 0 ? "+" : ""}${i.changePercent}%）`).join("\n")
         : "（大盤指數目前無法取得）",
+      describeTaifexNightFutures(taifexFutures),
       "",
       "【台股漲幅前8】", listStocks(twGainers.slice(0, 8)),
       "【台股跌幅前8】", listStocks(twLosers.slice(0, 8)),

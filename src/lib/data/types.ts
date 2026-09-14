@@ -79,6 +79,31 @@ export interface IndexQuote {
   changePercent: number;
 }
 
+/**
+ * 台指期（TX，大台指）夜盤近月合約報價 —— 見 lib/data/taifex.ts 的詳細說明。
+ * 跟 IndexQuote 分開一個型別，是因為夜盤這個資料源需要額外的「交易中/已收盤」
+ * 狀態跟資料時間戳才能誠實呈現（夜盤時段長達 15:00~次日05:00，使用者在這段
+ * 期間以外看到這張卡片時，必須清楚知道看到的是「最近一次夜盤」而不是即時資料）。
+ */
+export interface TaifexFuturesQuote {
+  /** 顯示用契約名稱，含近月月份，例如「台指期（近月，09月合約）」。近月合約由
+   *  交易所自己的看盤系統決定並在結算日隔天自動換月，這裡不用自己處理換月邏輯。 */
+  contractLabel: string;
+  price: number;
+  change: number;
+  changePercent: number;
+  /** 合約口數（張），來自交易所當下的合計成交量。 */
+  volume: number;
+  /** "trading"＝夜盤目前交易中；"closed"＝夜盤已收盤（顯示的是最近一次收盤資料）；
+   *  "halted"＝交易所回報其他特殊狀態（試撮/暫停/延長開收盤等罕見情況），這幾種
+   *  不強行歸類成 trading 或 closed，UI 顯示「特殊狀態」以免講錯。 */
+  status: "trading" | "closed" | "halted";
+  /** 資料時間戳（台北時間 "YYYY/MM/DD HH:mm:ss"），直接來自交易所回傳的成交時間，
+   *  不是本站抓取當下的系統時間——確保使用者能自行判斷資料新鮮度，不會被誤導成
+   *  「這一定是即時的」。 */
+  asOf: string;
+}
+
 export interface Fundamentals {
   peRatio?: number;
   dividendYield?: number;

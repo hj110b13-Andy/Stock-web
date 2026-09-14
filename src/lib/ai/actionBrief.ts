@@ -1,5 +1,5 @@
 import { cached } from "@/lib/data/cache";
-import { getIndices, getMultiSignalStocks, getChips } from "@/lib/data";
+import { describeTaifexNightFutures, getIndices, getMultiSignalStocks, getTaifexNightFutures, getChips } from "@/lib/data";
 import { getNewsFeed } from "@/lib/ai/newsfeed";
 import { formatSharesWithLots } from "@/lib/format";
 import { callAiProviders } from "@/lib/ai/provider";
@@ -52,8 +52,9 @@ export async function getActionBrief(forceRefresh = false): Promise<ActionBrief>
     "action-brief:v1",
     ACTION_BRIEF_TTL_MS,
     async () => {
-      const [indices, twMomentum, usMomentum, newsFeed] = await Promise.all([
+      const [indices, taifexFutures, twMomentum, usMomentum, newsFeed] = await Promise.all([
         getIndices(),
+        getTaifexNightFutures().catch(() => null),
         getMultiSignalStocks("TW"),
         getMultiSignalStocks("US"),
         getNewsFeed().catch(() => ({ pinned: [], items: [], generatedAt: new Date().toISOString() })),
@@ -65,6 +66,7 @@ export async function getActionBrief(forceRefresh = false): Promise<ActionBrief>
         indices.length > 0
           ? indices.map((i) => `${i.name}：${i.price}（${i.change >= 0 ? "+" : ""}${i.changePercent}%）`).join("\n")
           : "（大盤指數目前無法取得）",
+        describeTaifexNightFutures(taifexFutures),
         "",
         "【台股技術訊號共振股（同時符合2個以上客觀技術訊號，如爆量、站上均線、連漲）】",
         twMomentum.length > 0 ? listMomentum(twMomentum.slice(0, MOMENTUM_LIMIT)) : "（今日無）",

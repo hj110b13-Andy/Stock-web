@@ -108,6 +108,11 @@ src/
    │  │                              完全比照 twse.ts（報價/K線/基本面/月營收/季報EPS/三大法人/
    │  │                              融資融券/重大訊息/公司清單），見下方工作日誌詳細說明欄位差異
    │  │                              與 TPEx 端點自身的不穩定性（大檔案偶爾回傳中斷，已加重試）。
+   │  ├─ taifex.ts                   **2026-09-14 新增**：台指期（TX，大台指）夜盤近月合約報價，
+   │  │                              資料源是 TAIFEX 官方免費看盤網站 mis.taifex.com.tw/futures/
+   │  │                              自己的 getQuoteList API（不需登入/金鑰），見檔案開頭完整研究
+   │  │                              記錄跟下方工作日誌；export `describeTaifexNightFutures()`
+   │  │                              給 AI 問答/快報組 grounding 文字共用
    │  │                              興櫃不在範圍內，明確不做。
    │  ├─ us.ts                       美股資料抓取：Yahoo Finance 報價/K線/基本面(含P/B)/季度財報（皆需 crumb+cookie 認證）
    │  ├─ news.ts                     新聞資料：Google 新聞 RSS 搜尋（zh-TW + en-US 雙版面，美股
@@ -240,6 +245,98 @@ Google 登入（選用）、全站密碼保護（`SITE_PASSWORD`）、全站 SEO
 6. **規則六**：只要在等待背景工作完成（部署、下載、agent 執行等）導致一段時間沒有新回應，每最多 5 分鐘要在對話視窗主動回報一次目前狀態，不能整段沉默、也不能只依賴「完成才通知」的機制悶著頭等。
 
 ## 工作日誌（新到舊，只列有意義的變更；commit hash 對應 `git log`）
+
+### 2026-09-14：新增台指期夜盤（近月合約）——研究過程、找到的免費資料源、串接結果
+
+使用者要求：「台股大盤要加一個夜盤」，指的是台灣期貨交易所（TAIFEX）台指期（TX，
+大台指）的盤後交易時段（15:00~次日05:00），跟既有的台股加權指數（只在現貨盤中
+09:00-13:30 更新）互補，補上收盤後到隔天開盤前這段「資訊真空期」的市場情緒指標。
+比照這個 session 稍早 TPEx 那次「先研究免費公開資料源、再串接」的完整流程。
+
+**研究過程（先查過的管道，含排除原因）**：
+1. `openapi.taifex.com.tw`（TAIFEX 官方 OpenAPI）的 `/DailyMarketReportFut` 端點
+   雖然有 `TradingSession` 欄位明確區分「一般」/「盤後」，但實測在晚上 23:30（當時
+   夜盤已經開盤交易中超過 8 小時）呼叫，資料仍停留在 3 天前的最後一個交易日
+   ——是「T+1 結算後才正式公布」等級的官方報表，不是近即時資料，排除。
+2. `www.taifex.com.tw/cht/3/futDailyMarketReport`（官網歷史行情查詢頁）雖然頁面
+   本身有「交易時段：一般/盤後」選單，但這是傳統 JSP 頁面，用 curl 直接 POST
+   （含正確的 `queryType=3`、cookie、Referer）測試多次都被導向 404，且背後用來
+   動態填契約選單的 `getFutcontract.do` ajax 端點怎麼測都回空清單——判斷這個頁面
+   本身高度依賴瀏覽器環境（可能有額外的防爬蟲/session 機制），且就算打通了也只是
+   同一份 T+1 報表，沒有必要再花時間排除，直接放棄這個管道。
+3. 第三方看盤網站（BigGo財經、CMoney、Yahoo股市等）都只是網頁呈現，沒有公開、
+   允許程式化查詢的端點，且條款上不確定是否允許這樣使用，排除。
+
+**真正找到並採用的資料源**：TAIFEX 官方自己的免費看盤網站
+`mis.taifex.com.tw/futures/`（不需登入、不需金鑰，網頁本身公開）——這是一個
+Nuxt.js SPA，前端呼叫自己的 REST API：
+`POST https://mis.taifex.com.tw/futures/api/getQuoteList`，body
+`{"MarketType":"1","SymbolType":"F","KindID":"1","CID":"","ExpireMonth":""}`
+（`MarketType`："0"＝一般交易時段/日盤，"1"＝盤後交易時段/夜盤）。這個端點跟這個
+repo 既有的 `mis.twse.com.tw/stock/api/getStockInfo.jsp`（twse.ts 已經在用）是
+同一種交易所「近即時看盤 MIS 系統」架構慣例——找到的方式是直接下載該網站實際載入
+的 Nuxt 打包 JS（`_nuxt/*.js`），從裡面的 webpack 路由表找到
+`/AfterHoursSession/EquityIndices/FuturesDomestic`（夜盤／國內指數期貨）這個頁面
+對應的 lazy-load chunk，再從該 chunk 裡找到實際呼叫 `getQuoteList` 的程式碼跟
+`pageAttr` 參數值，不是憑空亂猜端點名稱。
+
+**驗證這是真正近即時、不是延遲資料**：晚上 23:38 呼叫時，回傳的 `CTime` 剛好等於
+呼叫當下的時間（精確到秒），確認不是快取/延遲資料；間隔約 1 分鐘重打兩次，
+價格、成交量、`CTime` 都正確跟著跳動（45613→45591→45593，22196→22904→22933張，
+`CTime` 23:37→23:47→23:48）。另外用第三方頁面 BigGo財經（`finance.biggo.com.tw/
+quote/TAIFEX_TX`）交叉核對：同一時間點附近價位落在 45591~45632 這個小範圍內，
+方向（下跌）一致，價位量級吻合；漲跌金額不同（BigGo -555 vs 本站 -184）追查後
+確認是「參考價基準點不同」造成的正常差異，不是資料錯誤——本站直接沿用交易所自己
+回傳的 `CDiff`/`CDiffRate`（基準是當日日盤結算價 45777，這正是 TAIFEX 官方對夜盤
+漲跌幅計算的正式基準），BigGo 疑似用前一整個交易日的基準（46187）換算，兩者對
+「現在的價位」本身完全一致，只是「相對誰計算漲跌」的慣例不同。另外巧合驗證：測試
+當下 `/api/ask` 抓到的真實新聞裡剛好有一則「快訊／台指期夜盤一度大跌近400點！」
+（ETtoday財經雲），跟本站當時抓到的下跌走勢方向一致，是額外的真實性佐證。
+
+**換月不用自己處理**：這個端點回傳的「國內指數期貨」清單已經由交易所自己依到期
+月份排序好，近月合約永遠是清單裡第一筆 `SymbolID` 開頭 `TXF`、且不是現貨假列
+`-P` 後綴的項目，結算日（每月第三個週三）隔天交易所自己就會把新的近月換到最前面，
+`taifex.ts` 完全不用自己判斷換月時機。
+
+**交易中／已收盤判斷不用自己猜時間表**：直接沿用交易所回傳的 `Status` 欄位
+（`""`＝交易中，`"TC"`＝收盤，其餘 PT/NCP/TH/PO/PC/CO 等罕見狀態一律顯示成「特殊
+狀態」，不強行歸類），不像 `marketStatus.ts` 那樣自己寫死時間區間去猜——這樣即使
+遇到國定假日交易時段調整之類的特殊情況，也是交易所自己說了算。
+
+**TLS 憑證**：`mis.taifex.com.tw` 的憑證是 Google Trust Services（WE1）簽發，
+是全球通用的標準中繼憑證，跟 PROGRESS.md 記錄過的 `www.tpex.org.tw`（台灣本地
+TWCA 簽發、境外連線會缺中繼憑證）是完全不同的憑證鏈，兩者不是同一類風險——但
+仍照規則二要求，會在正式站部署後實際驗證一次，不能只憑本機測試斷定正式站也一定
+正常。
+
+**串接內容**：新增 `src/lib/data/taifex.ts`（`fetchTaifexNightFutures()` +
+`describeTaifexNightFutures()`）、`types.ts` 新增 `TaifexFuturesQuote` 型別、
+`index.ts` 新增 `getTaifexNightFutures()`（沿用跟其他即時報價一樣的
+`QUOTE_TTL_MS`=20秒快取，抓不到或近月合約還沒開出成交價一律回傳 null，絕不用
+參考價頂替）、新增 `/api/taifex-futures` route、新增首頁卡片
+`components/TaifexFuturesCard.tsx`（放在大盤指數卡片下方、僅台股分頁，client
+component 每 20 秒輪詢，狀態徽章跟資料時間完全依賴後端回傳的真實狀態，不用本站
+自己猜的時間表）、AI 問答（`ask.ts`）與每日快報/今日建議（`brief.ts`/
+`actionBrief.ts`）的「大盤概況」grounding 都加上這行資料（系統提示詞也更新，
+明確告訴 AI 這是期貨、要照資料裡的交易中/已收盤狀態講、不要跟現貨加權指數混為
+一談）。
+
+**驗證（規則二自測）**：
+1. 本機 `npm run build` 通過。
+2. 本機 `npm run start` + 帶 unlock cookie 直接 curl `/api/taifex-futures`，
+   拿到真實數字（見上方「驗證這是真正近即時」段落）。
+3. `/api/ask` 問「台指期夜盤現在多少點？」，確認 grounding 文字正確組出
+   「台指期（近月，9月合約）（夜盤交易中，資料時間 2026/09/14 23:48:45）：
+   45593點（-0.4%）」這行，且跟大盤指數/新聞其他 grounding 區塊並存不衝突
+   （本機沒有設定 AI API key，AI 生成本身沒測到，但 grounding 資料管線本身
+   已確認正確）。
+4. 已 push 到 `claude/relaxed-curie-c69kp0`，待確認 Vercel 部署成功後在正式站
+   （有真正的 AI API key）重測一次 `/api/ask` 確認 AI 真的會用這筆資料回答、
+   且正確反映交易中/已收盤狀態，細節見下方（若這則工作日誌後面沒有補寫正式站
+   驗證結果，代表接手的裝置需要補做這一步）。
+
+**還沒派 Opus 規則三獨立複查**——這是使用者這次特別交代由他自己另外派 Opus，
+這次對話完成規則二自我測試後就停下來，見下方「目前已知問題」。
 
 ### 2026-09-14：Opus 對整批新功能的獨立複查（規則三）＋字級迴歸修正＋新增費城半導體指數與台指期結算日考量
 
@@ -1656,6 +1753,19 @@ Google 登入」、聊天輸入框是 `<input>` 不是 `<textarea>`、產業篩�
 - 再更早：`eb7b09a` 專案從零搭建（StockRadar 骨架：報價、圖表、搜尋、AI 問答）。
 
 ## 目前已知問題
+
+- **【2026-09-14 新增，還沒派 Opus 規則三獨立複查，也還沒在正式站驗證】台指期夜盤
+  （近月合約）**：詳見上方工作日誌同日期那則。資料源是 TAIFEX 官方免費看盤網站
+  `mis.taifex.com.tw/futures/`，本機用真實資料驗證過（含跟第三方 BigGo財經交叉
+  核對），`npm run build` 通過，已 push。**接手的裝置如果要回報「更新完成」，
+  記得先做完：(1) 確認 Vercel 部署成功（GitHub commit-status API）(2) 在正式站
+  用 unlock cookie 實際 curl `/api/taifex-futures` 跟 `/api/ask` 驗證真實資料
+  跟 AI 回答 (3) 等使用者另外派 Opus 規則三複查確認沒問題**——這次對話按使用者
+  指示，完成規則二自測後就先停在這裡，沒有繼續走規則三。**已知的資料源限制**：
+  `mis.taifex.com.tw` 這個端點是該網站前端自己的內部 API，不是 TAIFEX 正式對外
+  公告的公開 API 規格（不像 TWSE OpenAPI 那樣有官方文件），理論上該網站改版時
+  可能連端點名稱或參數格式一起換掉，屆時會需要重新用同樣的手法（下載該網站的
+  JS bundle 找新的呼叫方式）排查，這是使用非官方文件化端點的常見取捨。
 
 **現況：台股名稱查詢覆蓋率擴大（含意外挖出的跨 instance 記憶體快照 bug）、重大新聞
 一般項目加摘要、深色模式配色修正，以及緊接著 Opus 複查挖出的 AI 編造數字/CSS

@@ -24,12 +24,15 @@ import {
   fetchTpexQuotesBatch,
 } from "./tpex";
 import { fetchUsCandles, fetchUsEarnings, fetchUsFundamentals, fetchUsQuote, fetchUsQuotesBatch } from "./us";
+import { fetchTaifexNightFutures } from "./taifex";
+import type { TaifexFuturesQuote } from "./types";
 import { computeSignals, type Signal } from "@/lib/signals";
 import { computeVolumeMetrics, getTrailingAverageVolumeMap, maybeRecordDailyVolumeSnapshot } from "./volumeHistory";
 import type { VolumeTrend } from "./types";
 
 export * from "./types";
 export { sectorsFor, getTwUniverse, findSymbolByName, findAllSymbolsByName, findInUniverse } from "./universe";
+export { describeTaifexNightFutures } from "./taifex";
 
 async function universeFor(market: Market): Promise<UniverseEntry[]> {
   return market === "TW" ? getTwUniverse() : US_UNIVERSE;
@@ -318,6 +321,23 @@ export async function getIndices(): Promise<IndexQuote[]> {
     )
   );
   return results.filter((r): r is IndexQuote => r !== null);
+}
+
+/**
+ * 台指期（TX，大台指）夜盤近月合約報價——見 lib/data/taifex.ts 開頭的完整資料源
+ * 研究說明。跟 getIndices() 分開一個函式（而不是塞進 INDEX_DEFS），是因為這個
+ * 資料需要額外的 status/asOf 欄位才能誠實呈現「交易中」跟「已收盤」的差異，
+ * IndexQuote 型別沒有這兩個欄位。快取沿用跟其他即時報價一樣的 QUOTE_TTL_MS，
+ * 抓不到（含近月合約還沒開出成交價）一律回傳 null，不用參考價頂替。
+ */
+export async function getTaifexNightFutures(): Promise<TaifexFuturesQuote | null> {
+  return cached<TaifexFuturesQuote | null>("taifex:tx-night", QUOTE_TTL_MS, async () => {
+    try {
+      return await fetchTaifexNightFutures();
+    } catch {
+      return null;
+    }
+  });
 }
 
 /**
