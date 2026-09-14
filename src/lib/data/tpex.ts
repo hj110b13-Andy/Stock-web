@@ -1,4 +1,6 @@
-import { cachedMap, fetchWithTimeout } from "./cache";
+import https from "node:https";
+import tls from "node:tls";
+import { cachedMap } from "./cache";
 import type { Candle, ChartRange, Chips, Earnings, Fundamentals, MaterialAnnouncement, Quote } from "./types";
 import { findInUniverse, type UniverseEntry } from "./universe";
 import { TW_INDUSTRY_NAMES } from "./twse";
@@ -19,42 +21,208 @@ import { TW_INDUSTRY_NAMES } from "./twse";
 const TPEX_HEADERS = { "User-Agent": "Mozilla/5.0 (compatible; StockRadar/1.0)" };
 
 /**
- * TPEx's server has been observed, during this module's own construction, to
- * cut off its own larger whole-market payloads well before the byte count
- * its own `Content-Length` header promised — confirmed independent of
- * curl/this codebase (a plain Node `fetch` against the same URL got a raw
- * socket-level "other side closed" partway through) and reproducible at a
- * roughly 40-60% single-attempt failure rate across many live probes during
- * this build, both from this dev machine and from Vercel's network. Live
- * diagnosis (comparing plain GETs against `Range` requests to the same URL
- * back-to-back) found this is NOT request-volume-triggered rate limiting —
- * it reproduces on a session's very first request — but some broken
- * buffer/timeout in front of TPEx's static file server on FULL, single-shot
- * downloads specifically; `Range`-based partial requests to the same file
- * were reliable in that same testing. A plain blind-retry loop was tried
- * first and wasn't reliable enough on its own (observed failure rate too
- * high for 2-3 retries to bring down far enough), so this instead reads the
- * expected size from `Content-Length` and, whenever a response falls short,
- * resumes with a `Range: bytes=<received>-` request for exactly the missing
- * tail (pinned to the same file version via `If-Range`/ETag so a resume
- * can't silently splice together two different snapshots) rather than
- * re-downloading the whole thing blind. Bounded to a handful of resume
- * attempts so a genuinely unreachable endpoint still fails this fetch (and
- * therefore the caller's own try/catch) in well under Vercel's serverless
- * time budget rather than hanging near it.
+ * ROOT CAUSE, found live via a temporary diagnostic route deployed to
+ * production: every TPEx fetch failed on Vercel (100% of the time — not
+ * intermittent) with `TypeError: fetch failed` / cause
+ * "unable to verify the first certificate", while the exact same fetch
+ * succeeded reliably from this project's local dev machine. `openssl
+ * s_client -showcerts` against www.tpex.org.tw confirmed the server presents
+ * its leaf cert plus one intermediate ("TWCA SSL Certification Authority")
+ * but relies on the client already trusting the root ("TWCA CYBER Root CA",
+ * Taiwan's TWCA national CA) — Windows' own certificate store trusts that
+ * root (hence curl/Node both working fine on this dev machine), but it is
+ * NOT part of Node's bundled Mozilla-derived default CA list, so Node's
+ * `fetch`/TLS stack on Vercel's Linux runtime can't complete the chain and
+ * refuses the connection outright before any bytes are exchanged. This is
+ * NOT the response-truncation issue chased earlier in this same build
+ * (that was real too, but separate, and apparently specific to conditions
+ * on the local dev network — it never showed up as the failure mode on
+ * Vercel; there it was 100% a TLS handshake failure, not a partial body).
+ *
+ * Fix: a dedicated `https.Agent` for TPEx requests with this one root CA
+ * added on top of Node's default trusted set (`tls.rootCertificates`) —
+ * this is additive (nothing stops trusting anything it trusted before), not
+ * a blanket `rejectUnauthorized: false`, so certificate validation stays
+ * fully enforced, just now able to complete the one chain that was missing.
+ * Verified live on Vercel after deploying this fix (see PROGRESS.md).
  */
+const TWCA_CYBER_ROOT_CA_PEM = `-----BEGIN CERTIFICATE-----
+MIIFjTCCA3WgAwIBAgIQQAE0jMIAAAAAAAAAATzyxjANBgkqhkiG9w0BAQwFADBQ
+MQswCQYDVQQGEwJUVzESMBAGA1UEChMJVEFJV0FOLUNBMRAwDgYDVQQLEwdSb290
+IENBMRswGQYDVQQDExJUV0NBIENZQkVSIFJvb3QgQ0EwHhcNMjIxMTIyMDY1NDI5
+WhcNNDcxMTIyMTU1OTU5WjBQMQswCQYDVQQGEwJUVzESMBAGA1UEChMJVEFJV0FO
+LUNBMRAwDgYDVQQLEwdSb290IENBMRswGQYDVQQDExJUV0NBIENZQkVSIFJvb3Qg
+Q0EwggIiMA0GCSqGSIb3DQEBAQUAA4ICDwAwggIKAoICAQDG+Moe2Qkgfh1sTs6P
+40czRJzHyWmqOlt47nDSkvgEs1JSHWdyKKHfi12VCv7qze33Kc7wb3+szT3vsxxF
+avcokPFhV8UMxKNQXd7UtcsZyoC5dc4pztKFIuwCY8xEMCDa6pFbVuYdHNWdZsc/
+34bKS1PE2Y2yHer43CdTo0fhYcx9tbD47nORxc5zb87uEB8aBs/pJ2DFTxnk684i
+JkXXYJndzk834H/nY62wuFm40AZoNWDTNq5xQwTxaWV4fPMf88oon1oglWa0zbfu
+j3ikRRjpJi+NmykosaS3Om251Bw4ckVYsV7r8Cibt4LK/c/WMw+f+5eesRycnupf
+Xtuq3VTpMCEobY5583WSjCb+3MX2w7DfRFlDo7YDKPYIMKoNM+HvnKkHIuNZW0CP
+2oi3aQiotyMuRAlZN1vH4xfyIutuOVLF3lSnmMlLIJXcRolftBL5hSmO68gnFSDA
+S9TMfAxsNAwmmyYxpjyn9tnQS6Jk/zuZQXLB4HCX8SS7K8R0IrGsayIyJNN4KsDA
+oS/xUgXJP+92ZuJF2A09rZXIx4kmyA+upwMu+8Ff+iDhcK2wZSA3M2Cw1a/XDBzC
+kHDXShi8fgGwsOsVHkQGzaRP6AzRwyAQ4VRlnrZR0Bp2a0JaWHY06rc3Ga4udfmW
+5cFZ95RXKSWNOkyrTZpB0F8mAwIDAQABo2MwYTAOBgNVHQ8BAf8EBAMCAQYwDwYD
+VR0TAQH/BAUwAwEB/zAfBgNVHSMEGDAWgBSdhWEUfMFib5do5E83QOGt4A1WNzAd
+BgNVHQ4EFgQUnYVhFHzBYm+XaORPN0DhreANVjcwDQYJKoZIhvcNAQEMBQADggIB
+AGSPesRiDrWIzLjHhg6hShbNcAu3p4ULs3a2D6f/CIsLJc+o1IN1KriWiLb73y0t
+tGlTITVX1olNc79pj3CjYcya2x6a4CD4bLubIp1dhDGaLIrdaqHXKGnK/nZVekZn
+68xDiBaiA9a5F/gZbG0jAn/xX9AKKSM70aoK7akXJlQKTcKlTfjF/biBzysseKNn
+TKkHmvPfXvt89YnNdJdhEGoHK4Fa0o635yDRIG4kqIQnoVesqlVYL9zZyvpoBJ7t
+RCT5dEA7IzOrg1oYJkK2bVS1FmAwbLGg+LhBoF1JSdJlBTrq/p1hvIbZv97Tujqx
+f36SNI7JAG7cmL3c7IAFrQI932XtCwP39xaEBDG6k5TY8hL4iuO/Qq+n1M0RFxbI
+Qh0UqEL20kCGoE8jypZFVmAGzbdVAaYBlGX+bgUJurSkquLvWL69J1bY73NxW0Qz
+8ppy6rBePm6pUlvscG21h483XjyMnM7k8M4MZ0HMzvaAq07MTFb1wWFZk7Q+ptq4
+NxKfKjLji7gh7MMrZQzvIt6IKTtM1/r+t+FHvpw+PoP7UV31aPcuIYXcv/Fa4nzX
+xeSDwWrruoBa3lwtcHb4yOWHh8qgnaHlIhInD0Q9HWzq1MKLL295q39QpsQZp6F6
+t5b5wR9iWqJDB0BeJsas7a5wFsWqynKKTbDPAYsDP27X
+-----END CERTIFICATE-----`;
+
+/**
+ * TWCA turns out to have TWO different certificates sharing the CN "TWCA
+ * CYBER Root CA" in circulation — the self-signed one above, and this
+ * cross-signed one (issued BY "TWCA Global Root CA", an even older, more
+ * widely-trusted root — a common CA-transition technique, similar to how
+ * Let's Encrypt's ISRG Root X1 was cross-signed by DST Root X3 for a
+ * while). Independently captured via `openssl s_client -showcerts` against
+ * www.tpex.org.tw and confirmed to build a complete, valid 4-tier chain
+ * (leaf → SSL Sub-CA → this cert → TWCA Global Root CA below) on its own.
+ * Which variant actually gets served can depend on handshake specifics, so
+ * both are trusted here rather than betting on one.
+ */
+const TWCA_CYBER_ROOT_CA_CROSS_SIGNED_PEM = `-----BEGIN CERTIFICATE-----
+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
+-----END CERTIFICATE-----`;
+
+/** Self-signed "TWCA Global Root CA" — the higher root that
+ *  TWCA_CYBER_ROOT_CA_CROSS_SIGNED_PEM above chains up to. Valid to 2030. */
+const TWCA_GLOBAL_ROOT_CA_PEM = `-----BEGIN CERTIFICATE-----
+MIIFQTCCAymgAwIBAgICDL4wDQYJKoZIhvcNAQELBQAwUTELMAkGA1UEBhMCVFcx
+EjAQBgNVBAoTCVRBSVdBTi1DQTEQMA4GA1UECxMHUm9vdCBDQTEcMBoGA1UEAxMT
+VFdDQSBHbG9iYWwgUm9vdCBDQTAeFw0xMjA2MjcwNjI4MzNaFw0zMDEyMzExNTU5
+NTlaMFExCzAJBgNVBAYTAlRXMRIwEAYDVQQKEwlUQUlXQU4tQ0ExEDAOBgNVBAsT
+B1Jvb3QgQ0ExHDAaBgNVBAMTE1RXQ0EgR2xvYmFsIFJvb3QgQ0EwggIiMA0GCSqG
+SIb3DQEBAQUAA4ICDwAwggIKAoICAQCwBdvI64zEbooh745NnHEKH1Jw7W2CnJfF
+10xORUnLQEK1EjRsGcJ0pDFfhQKX7EMzClPSnIyOt7h52yvVavKOZsTuKwEHktSz
+0ALfUPZVr2YOy+BHYC8rMjk1Ujoog/h7FsYYuGLWRyWRzvAZEk2tY/XTP3VfKfCh
+MBwqoJimFb3u/Rk28OKRQ4/6ytYQJ0lM793B8YVwm8rqqFpD/G2Gb3PpN0Wp8DbH
+zIh1HrtsBv+baz4X7GGqcXzGHaL3SekVtTzWoWH1EfcFbx39Eb7QMAfCKbAJTibc
+46KokWofwpFFiFzlmLhxpRUZyXx1EcxwdE8tmx2RRP1WKKD+u4ZqyPpcC1jcxkt2
+yKsi2XMPpfRaAok/T54igu6idFMqPVMnaR1sjjIsZAAmY2E2TqNGtz99sy2sbZCi
+laLOz9qC5wc0GZbpuCGqKX6mOL6OKUohZnkfs8O1CWfe1tQHRvMq2uYiN2DLgbYP
+oA/pyJV/v1WRBXrPPRXAb94JlAGD1zQbzECl8LibZ9WYkTunhHiVJqRaCPgrdLQA
+BDzfuBSO6N+pjWxnkjMdwLfS7JLIvgm/LCkFbwJrnu+8vyq8W8BQj0FwcYeyTbcE
+qYSjMq+u7msXi7Kx/mzhkIyIqJdIzshNy/MGz19qCkKxHh53L46g5pIOBvwFItIm
+4TFRfTLcDwIDAQABoyMwITAOBgNVHQ8BAf8EBAMCAQYwDwYDVR0TAQH/BAUwAwEB
+/zANBgkqhkiG9w0BAQsFAAOCAgEAXzSBdu+WHdXltdkCY4QWwa6gcFGn90xHNcgL
+1yg9iXHZqjNB6hQbbCEAwGxCGX6faVsgQt+i0trEfJdLjbDorMjupWkEmQqSpqsn
+LhpNgb+E1HAerUf+/UqdM+DyucRFCCEK2mlpc3INvjT+lIutwx4116KD7+U4x6WF
+H6vPNOw/KP4M8VeGTslV9xzU2KV9Bnpv1d8Q34FOIWWxtuEXeZVFBs5fzNxGiWNo
+RI2T9GRwoD2dKAXDOXC4Ynsg/eTb6QihuJ49CcdP+yz4k3ZB3lLg4VfSnQO8d57+
+nile98FRYB/e2guyLXW3Q0iT5/Z5xoRdgFlglPx4mI88k1HtQJAH32RjJMtOcQWh
+15QaiDLxInQirqWm2BJpTGCjAu4r7NRjkgtevi92a6O2JryPA9gK8kxkRr05YuWW
+6zRjESjMlfGt7+/cgFhI6Uu46mWs6fyAtbXIRfmswZ/ZuepiiI7E8UuDEq3mi4TW
+nsLrgxifarsbJGAzcMzs9zLzXNl5fe+epP7JI8Mk7hWSsT2RTyaGvWZzJBPqpK5j
+wa19hAM8EHiGG3njxPPyBJUgriOCxLM6AGK/5jYk4Ve6xx6QddVfP5VhK8E7zeWz
+aGHQRiapIVJpLesux+t3zqY6tQMzT3bR51xUAV3LePTJDL/PEo4XLSNolOer/qmy
+KwbQBM0=
+-----END CERTIFICATE-----`;
+
+// Built once per process (not per request): building the trusted-CA list
+// and Agent is pure/cheap but there's no reason to redo it every call.
+// NOTE: these three certs are valid to Dec 2030 (checked via `openssl x509
+// -noout -dates`) — this hardcoded workaround will need refreshing (repeat
+// `openssl s_client -showcerts -connect www.tpex.org.tw:443` and update the
+// PEM blocks above) once they approach expiry, since Node will go back to
+// failing the same chain-verification error once these certs are no longer
+// valid rather than merely "missing".
+const tpexHttpsAgent = new https.Agent({
+  ca: [...tls.rootCertificates, TWCA_CYBER_ROOT_CA_PEM, TWCA_CYBER_ROOT_CA_CROSS_SIGNED_PEM, TWCA_GLOBAL_ROOT_CA_PEM],
+  keepAlive: true,
+});
+
+interface RawResponse {
+  status: number;
+  headers: Record<string, string | string[] | undefined>;
+  body: Buffer;
+}
+
+/** Node `https` request (not the global `fetch`) specifically so the custom
+ *  `tpexHttpsAgent` above (carrying the extra trusted root CA) applies —
+ *  the global `fetch`/undici stack doesn't offer a simple per-call `ca`
+ *  override, and every TPEx URL in this module is on the same host, so one
+ *  shared low-level helper covers all of them. */
+function tpexHttpsGet(url: string, headers: Record<string, string>, timeoutMs: number): Promise<RawResponse> {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { agent: tpexHttpsAgent, headers, timeout: timeoutMs }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (c: Buffer) => chunks.push(c));
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks) }));
+      res.on("error", reject);
+    });
+    req.on("timeout", () => req.destroy(new Error(`TPEx request timed out after ${timeoutMs}ms`)));
+    req.on("error", reject);
+  });
+}
+
 async function fetchTpexJson<T>(url: string, timeoutMs = 8000): Promise<T> {
   const text = await fetchTpexFullBody(url, timeoutMs);
   return JSON.parse(text) as T;
 }
 
+/**
+ * Separately from the TLS root-cause above, TPEx's large whole-market
+ * payloads were also observed (from the local dev machine, pre-dating the
+ * TLS diagnosis — see git history) to sometimes arrive short of their own
+ * `Content-Length`. Kept as defense-in-depth even though the TLS fix above
+ * was the actual production blocker: resumes any shortfall with a
+ * `Range: bytes=<received>-` request for exactly the missing tail (pinned
+ * to the same file version via `If-Range`/ETag), rather than either
+ * trusting a short body or blindly re-downloading everything.
+ */
 const TPEX_MAX_RESUME_ATTEMPTS = 6;
 
 async function fetchTpexFullBody(url: string, timeoutMs: number): Promise<string> {
-  const first = await fetchWithTimeout(url, timeoutMs, { headers: TPEX_HEADERS });
-  const expected = parseInt(first.headers.get("content-length") ?? "0", 10);
-  const etag = first.headers.get("etag") ?? undefined;
-  let bytes = Buffer.from(await first.arrayBuffer());
+  const first = await tpexHttpsGet(url, TPEX_HEADERS, timeoutMs);
+  const contentLength = first.headers["content-length"];
+  const expected = parseInt(Array.isArray(contentLength) ? contentLength[0] : contentLength ?? "0", 10);
+  const etagRaw = first.headers["etag"];
+  const etag = Array.isArray(etagRaw) ? etagRaw[0] : etagRaw;
+  let bytes = first.body;
 
   let attempts = 0;
   while (Number.isFinite(expected) && expected > 0 && bytes.length < expected && attempts < TPEX_MAX_RESUME_ATTEMPTS) {
@@ -62,14 +230,13 @@ async function fetchTpexFullBody(url: string, timeoutMs: number): Promise<string
     try {
       const headers: Record<string, string> = { ...TPEX_HEADERS, Range: `bytes=${bytes.length}-` };
       if (etag) headers["If-Range"] = etag;
-      const res = await fetchWithTimeout(url, timeoutMs, { headers });
-      const chunk = Buffer.from(await res.arrayBuffer());
-      if (res.status === 206 && chunk.length > 0) {
-        bytes = Buffer.concat([bytes, chunk]);
-      } else if (chunk.length > bytes.length) {
+      const res = await tpexHttpsGet(url, headers, timeoutMs);
+      if (res.status === 206 && res.body.length > 0) {
+        bytes = Buffer.concat([bytes, res.body]);
+      } else if (res.body.length > bytes.length) {
         // Server ignored Range and sent the whole file again (200) — only
         // worth keeping if it's actually more complete than what we have.
-        bytes = chunk;
+        bytes = res.body;
       }
     } catch {
       // This resume attempt failed outright; loop will try again (or give
