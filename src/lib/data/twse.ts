@@ -455,7 +455,12 @@ interface CompanyRow {
  * category TWSE adds later) falls back to "未分類" rather than showing the
  * raw code.
  */
-const TWSE_INDUSTRY_NAMES: Record<string, string> = {
+// Exported (and named market-neutrally) because tpex.ts reuses this same
+// table for TPEx's company listing — Taiwan's official industry
+// classification is shared across TWSE/TPEx per the 上市上櫃公司產業類別劃分
+// 及調整要點, confirmed live by cross-checking real TPEx symbols (e.g. 6488
+// 環球晶 codes as "24", matching this table's 半導體業).
+export const TW_INDUSTRY_NAMES: Record<string, string> = {
   "01": "水泥工業",
   "02": "食品工業",
   "03": "塑膠工業",
@@ -515,8 +520,9 @@ export async function fetchTwseListedCompanies(): Promise<UniverseEntry[]> {
         symbol: r.公司代號.trim(),
         market: "TW" as const,
         name: r.公司簡稱.trim(),
-        sector: TWSE_INDUSTRY_NAMES[code] ?? "未分類",
+        sector: TW_INDUSTRY_NAMES[code] ?? "未分類",
         currency: "TWD",
+        exchange: "TWSE" as const,
       };
     });
 }

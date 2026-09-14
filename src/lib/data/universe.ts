@@ -7,6 +7,15 @@ export interface UniverseEntry {
   name: string;
   sector: string;
   currency: string;
+  /**
+   * Internal routing detail for TW entries only — which exchange this stock
+   * actually trades on, used by lib/data/index.ts to pick the right
+   * per-symbol fetch (TWSE vs TPEx). Not part of the public Market contract
+   * ("TW" | "US" stays as-is everywhere outside this internal routing).
+   * Absent/undefined is treated as "TWSE" so every pre-existing seed/US
+   * entry needs no changes.
+   */
+  exchange?: "TWSE" | "TPEx";
 }
 
 // Small hand-curated seed list. Used as the TW universe until the full
@@ -282,7 +291,20 @@ const TW_UNIVERSE_TTL_MS = 24 * 60 * 60_000; // official company list changes ra
 // per-candidate-per-month chart fetch used by momentum screening, bounded
 // separately by MOMENTUM_CHART_CONCURRENCY). Verified locally that
 // /api/search?market=TW still returns promptly at 500.
-const MAX_TW_UNIVERSE = 500;
+const MAX_TWSE_UNIVERSE = 500;
+// TPEx (上櫃) headroom, added alongside MAX_TWSE_UNIVERSE above when TPEx
+// coverage was built. Deliberately a SEPARATE cap per exchange rather than
+// one shared MAX_TW_UNIVERSE — TPEx's whole-market quote snapshot
+// (fetchTpexQuoteSnapshot in tpex.ts) is always ONE request no matter how
+// many TPEx symbols end up in this universe, unlike TWSE's batch fetch
+// which is chunked per 50 symbols — so raising this number doesn't add any
+// concurrent-request risk to TPEx's own upstream the way raising TWSE's cap
+// would. 300 (out of TPEx's ~891 real OTC stocks) comfortably covers the
+// well-known large caps: fetchTpexListedCompanies sorts by paid-in capital
+// descending specifically so this cap keeps names like 環球晶(6488, rank 18),
+// 台燿(6274, rank 38), 鈊象(3293, rank 40) rather than cutting off wherever
+// their numeric code happens to sort.
+const MAX_TPEX_UNIVERSE = 300;
 
 // Kept in sync (best-effort, in the background) so the synchronous
 // findInUniverse/sectorsFor helpers below get the fuller official list as
@@ -335,34 +357,63 @@ function buildNameLookupPool(twCompanies: UniverseEntry[]): UniverseEntry[] {
  * never the data itself, and a seed symbol that isn't actually listed
  * anymore simply doesn't appear.
  */
-function capUniverse(companies: UniverseEntry[]): UniverseEntry[] {
+/**
+ * Applied per-exchange (see MAX_TWSE_UNIVERSE/MAX_TPEX_UNIVERSE above) so
+ * TPEx entries can never crowd out TWSE's existing, already-tuned slice (or
+ * vice versa) — a single shared cap over the concatenated list would let
+ * whichever exchange's companies happen to come first fill most of the
+ * budget.
+ */
+function capOne(companies: UniverseEntry[], seed: UniverseEntry[], max: number): UniverseEntry[] {
   const official = new Map(companies.map((e) => [e.symbol, e]));
   const picked = new Map<string, UniverseEntry>();
-  for (const seed of TW_UNIVERSE_SEED) {
-    const match = official.get(seed.symbol);
+  for (const s of seed) {
+    const match = official.get(s.symbol);
     if (match) picked.set(match.symbol, match);
   }
   for (const entry of companies) {
-    if (picked.size >= MAX_TW_UNIVERSE) break;
+    if (picked.size >= max) break;
     if (!picked.has(entry.symbol)) picked.set(entry.symbol, entry);
   }
-  return Array.from(picked.values()).slice(0, MAX_TW_UNIVERSE);
+  return Array.from(picked.values()).slice(0, max);
+}
+
+function capUniverse(companies: UniverseEntry[]): UniverseEntry[] {
+  const twse = companies.filter((e) => e.exchange !== "TPEx");
+  const tpex = companies.filter((e) => e.exchange === "TPEx");
+  // TW_UNIVERSE_SEED is all-TWSE, so it only ever matches (and only ever
+  // needs to be checked against) the twse partition; tpex has no hand-picked
+  // seed — fetchTpexListedCompanies' own paid-in-capital sort already puts
+  // its well-known large caps first, so a plain cap-to-N does the
+  // equivalent job for that partition.
+  return [...capOne(twse, TW_UNIVERSE_SEED, MAX_TWSE_UNIVERSE), ...capOne(tpex, [], MAX_TPEX_UNIVERSE)];
 }
 
 export async function getTwUniverse(): Promise<UniverseEntry[]> {
   const { fetchTwseListedCompanies } = await import("./twse");
-  // Cache holds the FULL uncapped official list — the cap is applied fresh
-  // on every read (cheap: an in-memory filter over an already-fetched
-  // array), so the raw full list is always available for name lookups even
-  // though this function's own return value stays capped for callers that
-  // batch-fetch live quotes for everything it returns.
+  const { fetchTpexListedCompanies } = await import("./tpex");
+  // Cache holds the FULL uncapped official list (TWSE + TPEx merged) — the
+  // cap is applied fresh on every read (cheap: an in-memory filter over an
+  // already-fetched array), so the raw full list is always available for
+  // name lookups even though this function's own return value stays capped
+  // for callers that batch-fetch live quotes for everything it returns.
+  // Each exchange's fetch is wrapped in its own try/catch (not one try
+  // around both) so a TPEx outage never takes down TWSE's listing or vice
+  // versa — matching the "degrade gracefully per source" pattern already
+  // used for e.g. getIndices' per-index try/catch. No symbol-collision risk
+  // merging the two: TW stock codes are allocated from one shared national
+  // registry, TWSE and TPEx never reuse the same code for different
+  // companies.
   const full = await cached("tw-universe-full-raw", TW_UNIVERSE_TTL_MS, async () => {
-    try {
-      const companies = await fetchTwseListedCompanies();
-      return companies.length > 0 ? companies : TW_UNIVERSE_SEED;
-    } catch {
-      return TW_UNIVERSE_SEED;
-    }
+    const [twse, tpex] = await Promise.all([
+      fetchTwseListedCompanies().catch(() => []),
+      fetchTpexListedCompanies().catch(() => []),
+    ]);
+    // TWSE failing outright falls back to the hand-curated (all-TWSE) seed
+    // as before — TPEx succeeding independently must never be the reason
+    // every TWSE stock silently vanishes from the universe.
+    const twseFinal = twse.length > 0 ? twse : TW_UNIVERSE_SEED;
+    return [...twseFinal, ...tpex];
   });
   twFullCompanySnapshot = full;
   nameLookupPool = buildNameLookupPool(full);

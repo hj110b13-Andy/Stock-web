@@ -1,5 +1,5 @@
 import { cached, cachedMap, mapWithConcurrency } from "./cache";
-import type { ChartRange, ChartResponse, Chips, Earnings, Fundamentals, IndexQuote, Market, MaterialAnnouncement, Quote, SearchItem } from "./types";
+import type { Candle, ChartRange, ChartResponse, Chips, Earnings, Fundamentals, IndexQuote, Market, MaterialAnnouncement, Quote, SearchItem } from "./types";
 import { US_UNIVERSE, findInUniverse, findSymbolByName, getTwUniverse, UniverseEntry } from "./universe";
 import {
   fetchTwseCandles,
@@ -12,6 +12,17 @@ import {
   fetchTwseQuote,
   fetchTwseQuotesBatch,
 } from "./twse";
+import {
+  fetchTpexCandles,
+  fetchTpexFundamentalsAll,
+  fetchTpexInstitutionalTradingAll,
+  fetchTpexMarginTradingAll,
+  fetchTpexMaterialAnnouncementsAll,
+  fetchTpexMonthlyRevenueAll,
+  fetchTpexQuarterlyEpsAll,
+  fetchTpexQuote,
+  fetchTpexQuotesBatch,
+} from "./tpex";
 import { fetchUsCandles, fetchUsEarnings, fetchUsFundamentals, fetchUsQuote, fetchUsQuotesBatch } from "./us";
 import { computeSignals, type Signal } from "@/lib/signals";
 
@@ -59,6 +70,51 @@ const QUOTE_TTL_MS = 20_000;
 const CHART_TTL_MS = 5 * 60_000;
 
 /**
+ * TW has two exchanges behind one public "TW" market — a given symbol must
+ * be routed to the right one before a per-symbol (single-source) fetch can
+ * happen at all. `findInUniverse` carries the answer whenever the symbol is
+ * already known; for the rare case of a symbol not indexed yet (a very new
+ * IPO, or simply a wrong/nonexistent code), TWSE is tried first (unchanged
+ * default/common-case latency) and TPEx only as a second attempt — this
+ * ambiguous-symbol path is rare enough that the extra latency it can incur
+ * is an acceptable tradeoff, and it must never slow down the common case
+ * where the exchange is already known.
+ */
+function resolveTwExchange(symbol: string): "TWSE" | "TPEx" | undefined {
+  return findInUniverse(symbol, "TW")?.exchange;
+}
+
+async function fetchTwQuote(symbol: string): Promise<Quote> {
+  const exchange = resolveTwExchange(symbol);
+  if (exchange === "TPEx") return fetchTpexQuote(symbol);
+  if (exchange === "TWSE") return fetchTwseQuote(symbol);
+  try {
+    return await fetchTwseQuote(symbol);
+  } catch (err) {
+    try {
+      return await fetchTpexQuote(symbol);
+    } catch {
+      throw err;
+    }
+  }
+}
+
+async function fetchTwChart(symbol: string, range: ChartRange): Promise<Candle[]> {
+  const exchange = resolveTwExchange(symbol);
+  if (exchange === "TPEx") return fetchTpexCandles(symbol, range);
+  if (exchange === "TWSE") return fetchTwseCandles(symbol, range);
+  try {
+    return await fetchTwseCandles(symbol, range);
+  } catch (err) {
+    try {
+      return await fetchTpexCandles(symbol, range);
+    } catch {
+      throw err;
+    }
+  }
+}
+
+/**
  * Returns null (never a fabricated value) when the live source can't be
  * reached — stock data must be accurate, so an unavailable quote is shown
  * as unavailable rather than filled in with a guess.
@@ -68,7 +124,7 @@ export async function getQuote(symbolInput: string, marketHint?: Market): Promis
   const market = marketHint ?? detectMarket(symbol);
   return cached(`quote:${market}:${symbol}`, QUOTE_TTL_MS, async () => {
     try {
-      return market === "TW" ? await fetchTwseQuote(symbol) : await fetchUsQuote(symbol);
+      return market === "TW" ? await fetchTwQuote(symbol) : await fetchUsQuote(symbol);
     } catch {
       return null;
     }
@@ -85,12 +141,33 @@ export async function getChart(
   const market = marketHint ?? detectMarket(symbol);
   return cached(`chart:${market}:${symbol}:${range}`, CHART_TTL_MS, async () => {
     try {
-      const candles = market === "TW" ? await fetchTwseCandles(symbol, range) : await fetchUsCandles(symbol, range);
+      const candles = market === "TW" ? await fetchTwChart(symbol, range) : await fetchUsCandles(symbol, range);
       return { symbol, market, range, candles };
     } catch {
       return null;
     }
   });
+}
+
+/**
+ * Merges a TWSE whole-market map with TPEx's equivalent for the same
+ * category (fundamentals, monthly revenue, quarterly EPS, institutional
+ * trading, margin trading, material announcements all follow this exact
+ * shape) — no symbol-collision risk (see getTwUniverse's comment: TW codes
+ * come from one shared national registry). Each side is wrapped in its own
+ * catch so a TPEx endpoint outage never takes down TWSE data for that
+ * category, or vice versa — same "degrade per source" pattern as
+ * getIndices' per-index try/catch and getTwUniverse's per-exchange fetch.
+ */
+async function mergeTwMaps<V>(
+  fetchTwse: () => Promise<Map<string, V>>,
+  fetchTpex: () => Promise<Map<string, V>>
+): Promise<Map<string, V>> {
+  const [twse, tpex] = await Promise.all([
+    fetchTwse().catch(() => new Map<string, V>()),
+    fetchTpex().catch(() => new Map<string, V>()),
+  ]);
+  return new Map([...twse, ...tpex]);
 }
 
 const FUNDAMENTALS_TTL_MS = 60 * 60_000; // fundamentals don't move intraday; refresh hourly
@@ -104,7 +181,9 @@ export async function getFundamentals(symbolInput: string, marketHint?: Market):
   const market = marketHint ?? detectMarket(symbol);
   try {
     if (market === "TW") {
-      const map = await cachedMap("fundamentals:TW:all", FUNDAMENTALS_TTL_MS, fetchTwseFundamentalsAll);
+      const map = await cachedMap("fundamentals:TW:all", FUNDAMENTALS_TTL_MS, () =>
+        mergeTwMaps(fetchTwseFundamentalsAll, fetchTpexFundamentalsAll)
+      );
       return map.get(symbol) ?? null;
     }
     return await cached(`fundamentals:US:${symbol}`, FUNDAMENTALS_TTL_MS, () => fetchUsFundamentals(symbol));
@@ -126,8 +205,12 @@ export async function getEarnings(symbolInput: string, marketHint?: Market): Pro
   try {
     if (market === "TW") {
       const [revenueMap, epsMap] = await Promise.all([
-        cachedMap("earnings:TW:revenue", EARNINGS_TTL_MS, fetchTwseMonthlyRevenueAll),
-        cachedMap("earnings:TW:eps", EARNINGS_TTL_MS, fetchTwseQuarterlyEpsAll),
+        cachedMap("earnings:TW:revenue", EARNINGS_TTL_MS, () =>
+          mergeTwMaps(fetchTwseMonthlyRevenueAll, fetchTpexMonthlyRevenueAll)
+        ),
+        cachedMap("earnings:TW:eps", EARNINGS_TTL_MS, () =>
+          mergeTwMaps(fetchTwseQuarterlyEpsAll, fetchTpexQuarterlyEpsAll)
+        ),
       ]);
       const revenue = revenueMap.get(symbol);
       const eps = epsMap.get(symbol);
@@ -153,8 +236,10 @@ export async function getChips(symbolInput: string, marketHint?: Market): Promis
   if (market !== "TW") return null;
   try {
     const [institutionalMap, marginMap] = await Promise.all([
-      cachedMap("chips:TW:institutional", CHIPS_TTL_MS, fetchTwseInstitutionalTradingAll),
-      cachedMap("chips:TW:margin", CHIPS_TTL_MS, fetchTwseMarginTradingAll),
+      cachedMap("chips:TW:institutional", CHIPS_TTL_MS, () =>
+        mergeTwMaps(fetchTwseInstitutionalTradingAll, fetchTpexInstitutionalTradingAll)
+      ),
+      cachedMap("chips:TW:margin", CHIPS_TTL_MS, () => mergeTwMaps(fetchTwseMarginTradingAll, fetchTpexMarginTradingAll)),
     ]);
     const institutional = institutionalMap.get(symbol);
     const margin = marginMap.get(symbol);
@@ -173,7 +258,9 @@ export async function getMaterialAnnouncements(symbolInput: string, marketHint?:
   const market = marketHint ?? detectMarket(symbol);
   if (market !== "TW") return [];
   try {
-    const map = await cachedMap("announcements:TW:all", ANNOUNCEMENTS_TTL_MS, fetchTwseMaterialAnnouncementsAll);
+    const map = await cachedMap("announcements:TW:all", ANNOUNCEMENTS_TTL_MS, () =>
+      mergeTwMaps(fetchTwseMaterialAnnouncementsAll, fetchTpexMaterialAnnouncementsAll)
+    );
     return map.get(symbol) ?? [];
   } catch {
     return [];
@@ -234,15 +321,29 @@ async function fetchMarketQuoteMap(market: Market): Promise<Map<string, Quote>> 
   const pool = await universeFor(market);
   const map = new Map<string, Quote>();
 
-  try {
-    const batch =
-      market === "TW"
-        ? await fetchTwseQuotesBatch(pool.map((e) => e.symbol))
-        : await fetchUsQuotesBatch(pool.map((e) => e.symbol));
-    for (const [symbol, quote] of batch) map.set(symbol, quote);
-  } catch {
-    // batch endpoint failed outright; every symbol falls through to the
-    // per-symbol attempt below instead
+  if (market === "TW") {
+    // Two separate exchanges behind one "TW" batch: each gets its own
+    // request and its own try/catch so a TWSE or TPEx outage only costs
+    // that exchange's symbols, not the whole TW screen. TPEx's own batch
+    // fetch is always ONE whole-market request regardless of how many TPEx
+    // symbols are in `pool` (see tpex.ts's fetchTpexQuoteSnapshot) — unlike
+    // TWSE's, it isn't chunked/concurrency-sensitive at all.
+    const twsePool = pool.filter((e) => e.exchange !== "TPEx").map((e) => e.symbol);
+    const tpexPool = pool.filter((e) => e.exchange === "TPEx").map((e) => e.symbol);
+    const [twseBatch, tpexBatch] = await Promise.all([
+      fetchTwseQuotesBatch(twsePool).catch(() => new Map<string, Quote>()),
+      fetchTpexQuotesBatch(tpexPool).catch(() => new Map<string, Quote>()),
+    ]);
+    for (const [symbol, quote] of twseBatch) map.set(symbol, quote);
+    for (const [symbol, quote] of tpexBatch) map.set(symbol, quote);
+  } else {
+    try {
+      const batch = await fetchUsQuotesBatch(pool.map((e) => e.symbol));
+      for (const [symbol, quote] of batch) map.set(symbol, quote);
+    } catch {
+      // batch endpoint failed outright; every symbol falls through to the
+      // per-symbol attempt below instead
+    }
   }
 
   // Only bother retrying individually when a small number slipped through
@@ -258,7 +359,12 @@ async function fetchMarketQuoteMap(market: Market): Promise<Map<string, Quote>> 
     const singles = await Promise.all(
       missing.map(async (entry): Promise<[string, Quote] | null> => {
         try {
-          const q = market === "TW" ? await fetchTwseQuote(entry.symbol) : await fetchUsQuote(entry.symbol);
+          const q =
+            market === "TW"
+              ? entry.exchange === "TPEx"
+                ? await fetchTpexQuote(entry.symbol)
+                : await fetchTwseQuote(entry.symbol)
+              : await fetchUsQuote(entry.symbol);
           return [entry.symbol, q];
         } catch {
           return null;
