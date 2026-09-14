@@ -146,9 +146,19 @@ export async function fetchTaifexNightFutures(): Promise<TaifexFuturesQuote | nu
   if (data.RtCode !== "0") throw new Error(`TAIFEX getQuoteList RtCode ${data.RtCode}: ${data.RtMsg}`);
 
   const list = data.RtData?.QuoteList ?? [];
-  // "TXF..." 開頭涵蓋大台指本尊；"-P" 後綴是清單裡夾帶的現貨參考列（臺指現貨，
-  // 不是期貨合約），要排除。清單本身已經依到期月份排序，第一筆命中的就是近月。
-  const nearMonth = list.find((row) => row.SymbolID?.startsWith("TXF") && !row.SymbolID.endsWith("-P"));
+  // 真正的合約列，SymbolID 格式是 TXF + 月碼字母 + 年碼數字（例如 TXFI6-M
+  // ＝ 2026 年 9 月合約）。清單裡還夾帶一筆「現貨參考列」（臺指現貨，價格其實
+  // 是加權指數、不是期貨），而且就排在第一筆。
+  //
+  // 原本的條件是「TXF 開頭且不以 -P 結尾」，但那個 -P 只是夜盤的寫法：同一支
+  // API 查日盤（MarketType=0）時，現貨列的 SymbolID 是 TXF-S，會直接穿過這個
+  // 排除條件被當成近月合約選中（實測 2026-09-15：舊條件在日盤選中「臺指現貨
+  // 45862.52」＝加權指數，而不是臺指期的 45780）。夜盤目前確實是 -P、還沒踩到，
+  // 但一旦踩到就是把現貨指數當期貨報價顯示，畫面上完全看不出來。
+  // 改成正面表列合約命名規則，只認真正的合約列，不再依賴「排除已知的假列後綴」
+  // 這種黑名單式寫法（實測新舊條件在夜盤選出的是同一筆，行為不變）。
+  // 清單本身已經依到期月份排序，第一筆命中的就是近月。
+  const nearMonth = list.find((row) => /^TXF[A-Z]\d/.test(row.SymbolID ?? ""));
   if (!nearMonth) return null;
 
   const price = toNumber(nearMonth.CLastPrice);
