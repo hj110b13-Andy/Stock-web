@@ -404,14 +404,22 @@ export async function getTwUniverse(): Promise<UniverseEntry[]> {
   // merging the two: TW stock codes are allocated from one shared national
   // registry, TWSE and TPEx never reuse the same code for different
   // companies.
-  // "-v2": this key's SHAPE changed when TPEx was merged in (TWSE-only ->
+  // "-v3": this key's SHAPE changed when TPEx was merged in (TWSE-only ->
   // TWSE+TPEx) — bumping the key (same pattern as news-feed:v1 -> v2
   // elsewhere in this codebase) forces every instance to recompute on next
   // read instead of serving whatever pre-TPEx list this key already holds
-  // in Redis for up to its full 24h TTL. Without this, the merged universe
-  // wouldn't actually reach searchStocks/getMultiSignalStocks until the old
-  // cached entry happened to expire naturally.
-  const full = await cached("tw-universe-full-raw-v2", TW_UNIVERSE_TTL_MS, async () => {
+  // in Redis for up to its full 24h TTL. Went through v2 first, but real
+  // traffic hit (and cached, for the full 24h TTL) a TWSE-only result under
+  // that key in the window between merging TPEx in and actually fixing
+  // fetchTpexListedCompanies' reliability (see tpex.ts's
+  // TPEX_MAX_RESUME_ATTEMPTS history) — so v2 itself ended up poisoned with
+  // exactly the stale shape this versioning was meant to avoid. Bumped
+  // again to v3 now that the underlying fetch is actually reliable, so this
+  // key starts clean. Lesson: bump the version again any time a fix lands
+  // that changes what a given key's freshly-computed value would contain,
+  // not just once when the shape first changes — an intermediate broken
+  // deploy can just as easily poison a "new" versioned key as an old one.
+  const full = await cached("tw-universe-full-raw-v3", TW_UNIVERSE_TTL_MS, async () => {
     const [twse, tpex] = await Promise.all([
       fetchTwseListedCompanies().catch(() => []),
       fetchTpexListedCompanies().catch(() => []),
