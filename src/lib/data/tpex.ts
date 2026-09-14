@@ -20,53 +20,64 @@ const TPEX_HEADERS = { "User-Agent": "Mozilla/5.0 (compatible; StockRadar/1.0)" 
 
 /**
  * TPEx's server has been observed, during this module's own construction, to
- * reset the connection mid-response on its larger whole-market payloads —
- * confirmed independent of curl/this codebase (a plain Node `fetch` against
- * the same URL got a raw socket-level "other side closed" from TPEx's own
- * server partway through, at a different byte offset each time) and
- * reproducible under repeated testing within a short window. This matches
- * the pattern of an unauthenticated public-sector API silently throttling
- * under load (truncating instead of returning 429) rather than a fixed-size
- * bug — TPEx's OpenAPI has no API key/auth tier, so there's no formal
- * documented rate limit, just observed degrade-under-repeated-hits behavior.
- * Real usage from this app is nowhere near that volume (each of these
- * whole-market endpoints is fetched at most once per its own cache TTL —
- * 20s for quotes, 30–60min for the rest — not dozens of times in an hour the
- * way ad-hoc testing does), so this is mainly defensive: a few retries with
- * multi-second (not millisecond) backoff.
- *
- * Root-caused live (via a follow-up research pass hitting the endpoint
- * directly with curl -w and Range requests) rather than left as a guess:
- * this is a broken buffer/timeout somewhere in front of TPEx's static file
- * server, NOT request-volume-triggered rate limiting — single-shot GETs to
- * e.g. tpex_mainboard_quotes failed to deliver the full body (per its own
- * `Content-Length` header) roughly 40% of the time even as the very first
- * request of a session, while ranged/chunked requests to the same URL
- * succeeded reliably. A real per-byte-range fetch would be the fully robust
- * fix, but isn't implemented here — with an independent ~40% single-attempt
- * failure rate, 3 attempts already brings the odds of a fully-failed fetch
- * down to roughly 0.4³ ≈ 6%, which combined with this data only being
- * fetched at most once per cache TTL (never per-request) makes the plain
- * retry loop a proportionate fix. `res.json()` parsing (not just the
- * initial `fetch()`, which fetchWithTimeout already guards) is inside the
- * retry loop because the truncation happens mid-stream, after a 200 status
- * was already received — a truncated body almost always fails JSON.parse
- * outright (mid-string cutoffs, not clean-but-short arrays), so parse
- * failure is already a reliable truncation signal without needing to
- * separately check Content-Length.
+ * cut off its own larger whole-market payloads well before the byte count
+ * its own `Content-Length` header promised — confirmed independent of
+ * curl/this codebase (a plain Node `fetch` against the same URL got a raw
+ * socket-level "other side closed" partway through) and reproducible at a
+ * roughly 40-60% single-attempt failure rate across many live probes during
+ * this build, both from this dev machine and from Vercel's network. Live
+ * diagnosis (comparing plain GETs against `Range` requests to the same URL
+ * back-to-back) found this is NOT request-volume-triggered rate limiting —
+ * it reproduces on a session's very first request — but some broken
+ * buffer/timeout in front of TPEx's static file server on FULL, single-shot
+ * downloads specifically; `Range`-based partial requests to the same file
+ * were reliable in that same testing. A plain blind-retry loop was tried
+ * first and wasn't reliable enough on its own (observed failure rate too
+ * high for 2-3 retries to bring down far enough), so this instead reads the
+ * expected size from `Content-Length` and, whenever a response falls short,
+ * resumes with a `Range: bytes=<received>-` request for exactly the missing
+ * tail (pinned to the same file version via `If-Range`/ETag so a resume
+ * can't silently splice together two different snapshots) rather than
+ * re-downloading the whole thing blind. Bounded to a handful of resume
+ * attempts so a genuinely unreachable endpoint still fails this fetch (and
+ * therefore the caller's own try/catch) in well under Vercel's serverless
+ * time budget rather than hanging near it.
  */
-async function fetchTpexJson<T>(url: string, timeoutMs = 6000, retries = 2): Promise<T> {
-  let lastErr: unknown;
-  for (let attempt = 0; attempt <= retries; attempt++) {
+async function fetchTpexJson<T>(url: string, timeoutMs = 8000): Promise<T> {
+  const text = await fetchTpexFullBody(url, timeoutMs);
+  return JSON.parse(text) as T;
+}
+
+const TPEX_MAX_RESUME_ATTEMPTS = 6;
+
+async function fetchTpexFullBody(url: string, timeoutMs: number): Promise<string> {
+  const first = await fetchWithTimeout(url, timeoutMs, { headers: TPEX_HEADERS });
+  const expected = parseInt(first.headers.get("content-length") ?? "0", 10);
+  const etag = first.headers.get("etag") ?? undefined;
+  let bytes = Buffer.from(await first.arrayBuffer());
+
+  let attempts = 0;
+  while (Number.isFinite(expected) && expected > 0 && bytes.length < expected && attempts < TPEX_MAX_RESUME_ATTEMPTS) {
+    attempts++;
     try {
-      const res = await fetchWithTimeout(url, timeoutMs, { headers: TPEX_HEADERS });
-      return (await res.json()) as T;
-    } catch (err) {
-      lastErr = err;
-      if (attempt < retries) await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+      const headers: Record<string, string> = { ...TPEX_HEADERS, Range: `bytes=${bytes.length}-` };
+      if (etag) headers["If-Range"] = etag;
+      const res = await fetchWithTimeout(url, timeoutMs, { headers });
+      const chunk = Buffer.from(await res.arrayBuffer());
+      if (res.status === 206 && chunk.length > 0) {
+        bytes = Buffer.concat([bytes, chunk]);
+      } else if (chunk.length > bytes.length) {
+        // Server ignored Range and sent the whole file again (200) — only
+        // worth keeping if it's actually more complete than what we have.
+        bytes = chunk;
+      }
+    } catch {
+      // This resume attempt failed outright; loop will try again (or give
+      // up once TPEX_MAX_RESUME_ATTEMPTS is hit) rather than aborting on
+      // the first hiccup.
     }
   }
-  throw lastErr;
+  return bytes.toString("utf8");
 }
 
 function parseTpexNumber(raw: string | undefined): number | undefined {
