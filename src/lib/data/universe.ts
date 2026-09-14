@@ -310,12 +310,19 @@ const MAX_TWSE_UNIVERSE = 500;
 // many TPEx symbols end up in this universe, unlike TWSE's batch fetch
 // which is chunked per 50 symbols — so raising this number doesn't add any
 // concurrent-request risk to TPEx's own upstream the way raising TWSE's cap
-// would. 300 (out of TPEx's ~891 real OTC stocks) comfortably covers the
-// well-known large caps: fetchTpexListedCompanies sorts by paid-in capital
-// descending specifically so this cap keeps names like 環球晶(6488, rank 18),
-// 台燿(6274, rank 38), 鈊象(3293, rank 40) rather than cutting off wherever
-// their numeric code happens to sort.
-const MAX_TPEX_UNIVERSE = 300;
+// would.
+//
+// Originally 300: an Opus QA pass found 信驊(5274) — a well-known, widely
+// discussed TPEx chip-design stock — excluded from /api/search purely
+// because it sorted past the 300th spot in fetchTpexListedCompanies' own
+// paid-in-capital ordering, even though single-symbol lookups (quote/chart/
+// AI chat) worked fine for it since those don't go through this cap at all.
+// Raised to 900 — comfortably above TPEx's real ~891 OTC stock count — since
+// there's no concurrency cost to justify capping this exchange tightly the
+// way MAX_TWSE_UNIVERSE's 500 is (that one IS chunked batch requests). This
+// is a ceiling for correctness/future headroom, not an active constraint:
+// every real TPEx stock should now appear in search/rankings.
+const MAX_TPEX_UNIVERSE = 900;
 
 // Kept in sync (best-effort, in the background) so the synchronous
 // findInUniverse/sectorsFor helpers below get the fuller official list as
