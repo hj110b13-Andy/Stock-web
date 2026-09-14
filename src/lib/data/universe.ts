@@ -404,7 +404,14 @@ export async function getTwUniverse(): Promise<UniverseEntry[]> {
   // merging the two: TW stock codes are allocated from one shared national
   // registry, TWSE and TPEx never reuse the same code for different
   // companies.
-  const full = await cached("tw-universe-full-raw", TW_UNIVERSE_TTL_MS, async () => {
+  // "-v2": this key's SHAPE changed when TPEx was merged in (TWSE-only ->
+  // TWSE+TPEx) — bumping the key (same pattern as news-feed:v1 -> v2
+  // elsewhere in this codebase) forces every instance to recompute on next
+  // read instead of serving whatever pre-TPEx list this key already holds
+  // in Redis for up to its full 24h TTL. Without this, the merged universe
+  // wouldn't actually reach searchStocks/getMultiSignalStocks until the old
+  // cached entry happened to expire naturally.
+  const full = await cached("tw-universe-full-raw-v2", TW_UNIVERSE_TTL_MS, async () => {
     const [twse, tpex] = await Promise.all([
       fetchTwseListedCompanies().catch(() => []),
       fetchTpexListedCompanies().catch(() => []),
