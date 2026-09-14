@@ -343,7 +343,7 @@ export async function answerQuestion(
   // its own here) gives the model something concrete to react to.
   const notFoundNote =
     !stockGrounding && !contextSymbol && !wantsMovers
-      ? "【查詢結果】這個問題沒有比對到本站資料庫裡任何一檔股票或公司（可能是名稱/代號打錯、簡稱、或這檔股票不在本站資料涵蓋範圍——本站台股目前只涵蓋證交所上市公司，不含上櫃/興櫃）。"
+      ? "【內部系統標記／非使用者可見文字，禁止原樣照抄輸出】比對結果：這個問題沒有比對到本站資料庫裡任何一檔股票或公司（可能是名稱/代號打錯、簡稱、或這檔股票不在本站資料涵蓋範圍——本站台股目前只涵蓋證交所上市公司，不含上櫃/興櫃）。請用你自己的話，以一般對話語氣告訴使用者查不到，不要複製這段標記文字本身。"
       : "";
 
   const grounding = [
@@ -367,7 +367,7 @@ export async function answerQuestion(
     // violating the site's core "never fabricate" principle. The general
     // "don't make up numbers" rule further down evidently wasn't forceful
     // or early enough to stop this on its own.
-    "全站最重要的原則，優先於底下任何其他規則：只能講參考資料裡真實出現的數字，绝对不可以用你自己過去學到的知識回答任何具體數字（股價、本益比、成交量、法人買賣超、技術指標數值等）來填補資料的空缺，即使你覺得自己知道答案也一樣——因為你的訓練資料可能過期、記錯，或者根本不是這檔股票。如果參考資料裡出現【查詢結果】這個區塊，代表這個問題沒有比對到本站資料庫裡任何股票，一律直接誠實回答『目前查不到這檔股票/公司的資料，可能是名稱或代號打錯、或不在本站資料涵蓋範圍（本站台股目前只涵蓋證交所上市公司，不含上櫃/興櫃）』，不要接著又用自己的知識補一段分析上去；如果使用者這句話根本沒有在問特定股票（例如問名詞解釋、問大盤整體狀況），就不用提這件事，正常回答就好。",
+    "全站最重要的原則，優先於底下任何其他規則：只能講參考資料裡真實出現的數字，绝对不可以用你自己過去學到的知識回答任何具體數字（股價、本益比、成交量、法人買賣超、技術指標數值等）來填補資料的空缺，即使你覺得自己知道答案也一樣——因為你的訓練資料可能過期、記錯，或者根本不是這檔股票。如果參考資料裡出現『比對結果：這個問題沒有比對到本站資料庫裡任何一檔股票或公司』這類標記，代表這個問題沒有比對到本站資料庫裡任何股票，一律用你自己的話直接誠實回答『目前查不到這檔股票/公司的資料，可能是名稱或代號打錯、或不在本站資料涵蓋範圍（本站台股目前只涵蓋證交所上市公司，不含上櫃/興櫃）』，絕對不要把參考資料裡的內部標記文字（含中括號【】包住的內部提示語）直接照抄貼到回答裡，那些是寫給你看的指示、不是要你輸出的內容；也不要接著又用自己的知識補一段分析上去；如果使用者這句話根本沒有在問特定股票（例如問名詞解釋、問大盤整體狀況），就不用提這件事，正常回答就好。",
     "這個網站的目標使用者是完全沒有股票/財經背景的一般人，終極目標是讓他們能快速看懂現況、知道自己可以怎麼做。回答一定要簡短、直接、好懂：能一兩句話講完就不要拉長，不要模稜兩可、不要來回鋪陳、不要重複同樣的免責聲明兩次以上。語氣像在跟朋友講重點，不是寫報告或論文。",
     "用到任何專有名詞（例如本益比、股價淨值比、RSI、MACD、三大法人、融資融券、殖利率）時，一定要在講完後順手用幾個字白話解釋是什麼意思，不能假設對方已經懂——例如『本益比（股價相對獲利的貴不貴）』這種簡短帶過即可，不用長篇說明，但絕對不能完全不解釋就丟術語。",
     "籌碼面的詞彙實測特別容易漏解釋：『三大法人』第一次出現時一定要附帶解釋『（外資、投信、自營商這些大戶）』，『外資』第一次出現要附帶『（外國機構投資人）』，『投信』要附帶『（國內基金公司）』，『融資』要附帶『（跟券商借錢買股票）』，『融券』要附帶『（跟券商借股票來放空）』，『籌碼』要附帶『（誰在買誰在賣的動向）』，個股資料裡技術訊號如果出現『0軸』（MACD訊號的一部分），第一次出現要附帶『（0軸是判斷多空力道強弱的分界線）』——這條規則優先於『簡短』的要求，就算為了這句解釋讓回答變長一點也要保留；同一次回答裡第一次出現才需要附帶解釋，之後同一個詞重複出現不用每次都再解釋一遍。",
@@ -393,13 +393,29 @@ export async function answerQuestion(
 
   const messages: ChatTurn[] = [...history, { role: "user", content: userContent }];
   const result = await callAiProviders(system, messages);
-  if (result.usedAi) return { answer: result.answer, groundedSymbol, usedAi: true };
+  if (result.usedAi) {
+    return { answer: sanitizeLeakedMarkers(result.answer), groundedSymbol, usedAi: true };
+  }
 
   return {
     answer: buildCannedAnswer(grounding, groundedSymbol, result.failureReason ?? "未知原因"),
     groundedSymbol,
     usedAi: false,
   };
+}
+
+// Safety net for a real production leak an Opus QA pass found: in ~11% of
+// trials the model echoed the internal "not found" grounding marker verbatim
+// as its entire reply instead of paraphrasing it (sometimes literally just
+// "【查詢結果】" with nothing else). Rewording the marker in the prompt made
+// it less answer-shaped, but this strips any marker text that still leaks
+// through so a user never sees a bare bracket token.
+const LEAKED_MARKER_PATTERN = /(?:【內部系統標記[^】]*】|【查詢結果】)/g;
+
+function sanitizeLeakedMarkers(answer: string): string {
+  const cleaned = answer.replace(LEAKED_MARKER_PATTERN, "").trim();
+  if (cleaned) return cleaned;
+  return "目前查不到這檔股票/公司的資料，可能是名稱或代號打錯、或不在本站資料涵蓋範圍（本站台股目前只涵蓋證交所上市公司，不含上櫃/興櫃）。";
 }
 
 function buildCannedAnswer(grounding: string, groundedSymbol: string | undefined, reason: string): string {
