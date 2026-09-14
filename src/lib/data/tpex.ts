@@ -28,70 +28,46 @@ const TPEX_HEADERS = { "User-Agent": "Mozilla/5.0 (compatible; StockRadar/1.0)" 
  * succeeded reliably from this project's local dev machine. `openssl
  * s_client -showcerts` against www.tpex.org.tw confirmed the server presents
  * its leaf cert plus one intermediate ("TWCA SSL Certification Authority")
- * but relies on the client already trusting the root ("TWCA CYBER Root CA",
- * Taiwan's TWCA national CA) — Windows' own certificate store trusts that
- * root (hence curl/Node both working fine on this dev machine), but it is
- * NOT part of Node's bundled Mozilla-derived default CA list, so Node's
- * `fetch`/TLS stack on Vercel's Linux runtime can't complete the chain and
- * refuses the connection outright before any bytes are exchanged. This is
- * NOT the response-truncation issue chased earlier in this same build
- * (that was real too, but separate, and apparently specific to conditions
- * on the local dev network — it never showed up as the failure mode on
- * Vercel; there it was 100% a TLS handshake failure, not a partial body).
+ * but relies on the client already trusting the root, ultimately "TWCA
+ * CYBER Root CA" (Taiwan's TWCA national CA). Windows' own certificate
+ * store trusts that root (hence curl/Node both working fine on this dev
+ * machine), but it is NOT part of Node's bundled Mozilla-derived default CA
+ * list, so Node's `fetch`/TLS stack on Vercel's Linux runtime can't
+ * complete the chain and refuses the connection outright before any bytes
+ * are exchanged. This is NOT the response-truncation issue chased earlier
+ * in this same build (that was real too, but separate, and apparently
+ * specific to conditions on the local dev network — it never showed up as
+ * the failure mode on Vercel; there it was 100% a TLS handshake failure,
+ * not a partial body).
  *
- * Fix: a dedicated `https.Agent` for TPEx requests with this one root CA
+ * An earlier version of this fix also embedded a second, self-signed
+ * certificate also named "TWCA CYBER Root CA" that turned out — confirmed
+ * by comparing SHA-256 fingerprints against a fresh `openssl s_client
+ * -showcerts` capture — to be a DIFFERENT, unrelated certificate that just
+ * happens to share the same Subject DN as the real one below (TWCA
+ * apparently reissued a cert under the identical name at some point).
+ * Having two same-Subject-different-key certs in the trusted set at once is
+ * exactly the kind of edge case that can confuse an OpenSSL-based path
+ * builder, and removing it (keeping only the two certs below, whose
+ * fingerprints are confirmed to match what the live server's chain actually
+ * needs) is the fix — not adding more, less.
+ *
+ * Fix: a dedicated `https.Agent` for TPEx requests with these root CAs
  * added on top of Node's default trusted set (`tls.rootCertificates`) —
  * this is additive (nothing stops trusting anything it trusted before), not
  * a blanket `rejectUnauthorized: false`, so certificate validation stays
  * fully enforced, just now able to complete the one chain that was missing.
- * Verified live on Vercel after deploying this fix (see PROGRESS.md).
+ *
+ * These two certs (this one and TWCA_GLOBAL_ROOT_CA_PEM below) were
+ * captured via `openssl s_client -showcerts` against www.tpex.org.tw and
+ * cross-checked by SHA-256 fingerprint against the chain the live server
+ * actually presents — "TWCA CYBER Root CA" here is issued BY "TWCA Global
+ * Root CA" (an even older, more widely-trusted root — a common CA
+ * transition technique, similar to how Let's Encrypt's ISRG Root X1 was
+ * cross-signed by DST Root X3 for a while), and together they complete a
+ * full 4-tier chain (leaf → SSL Sub-CA → this cert → TWCA Global Root CA).
  */
 const TWCA_CYBER_ROOT_CA_PEM = `-----BEGIN CERTIFICATE-----
-MIIFjTCCA3WgAwIBAgIQQAE0jMIAAAAAAAAAATzyxjANBgkqhkiG9w0BAQwFADBQ
-MQswCQYDVQQGEwJUVzESMBAGA1UEChMJVEFJV0FOLUNBMRAwDgYDVQQLEwdSb290
-IENBMRswGQYDVQQDExJUV0NBIENZQkVSIFJvb3QgQ0EwHhcNMjIxMTIyMDY1NDI5
-WhcNNDcxMTIyMTU1OTU5WjBQMQswCQYDVQQGEwJUVzESMBAGA1UEChMJVEFJV0FO
-LUNBMRAwDgYDVQQLEwdSb290IENBMRswGQYDVQQDExJUV0NBIENZQkVSIFJvb3Qg
-Q0EwggIiMA0GCSqGSIb3DQEBAQUAA4ICDwAwggIKAoICAQDG+Moe2Qkgfh1sTs6P
-40czRJzHyWmqOlt47nDSkvgEs1JSHWdyKKHfi12VCv7qze33Kc7wb3+szT3vsxxF
-avcokPFhV8UMxKNQXd7UtcsZyoC5dc4pztKFIuwCY8xEMCDa6pFbVuYdHNWdZsc/
-34bKS1PE2Y2yHer43CdTo0fhYcx9tbD47nORxc5zb87uEB8aBs/pJ2DFTxnk684i
-JkXXYJndzk834H/nY62wuFm40AZoNWDTNq5xQwTxaWV4fPMf88oon1oglWa0zbfu
-j3ikRRjpJi+NmykosaS3Om251Bw4ckVYsV7r8Cibt4LK/c/WMw+f+5eesRycnupf
-Xtuq3VTpMCEobY5583WSjCb+3MX2w7DfRFlDo7YDKPYIMKoNM+HvnKkHIuNZW0CP
-2oi3aQiotyMuRAlZN1vH4xfyIutuOVLF3lSnmMlLIJXcRolftBL5hSmO68gnFSDA
-S9TMfAxsNAwmmyYxpjyn9tnQS6Jk/zuZQXLB4HCX8SS7K8R0IrGsayIyJNN4KsDA
-oS/xUgXJP+92ZuJF2A09rZXIx4kmyA+upwMu+8Ff+iDhcK2wZSA3M2Cw1a/XDBzC
-kHDXShi8fgGwsOsVHkQGzaRP6AzRwyAQ4VRlnrZR0Bp2a0JaWHY06rc3Ga4udfmW
-5cFZ95RXKSWNOkyrTZpB0F8mAwIDAQABo2MwYTAOBgNVHQ8BAf8EBAMCAQYwDwYD
-VR0TAQH/BAUwAwEB/zAfBgNVHSMEGDAWgBSdhWEUfMFib5do5E83QOGt4A1WNzAd
-BgNVHQ4EFgQUnYVhFHzBYm+XaORPN0DhreANVjcwDQYJKoZIhvcNAQEMBQADggIB
-AGSPesRiDrWIzLjHhg6hShbNcAu3p4ULs3a2D6f/CIsLJc+o1IN1KriWiLb73y0t
-tGlTITVX1olNc79pj3CjYcya2x6a4CD4bLubIp1dhDGaLIrdaqHXKGnK/nZVekZn
-68xDiBaiA9a5F/gZbG0jAn/xX9AKKSM70aoK7akXJlQKTcKlTfjF/biBzysseKNn
-TKkHmvPfXvt89YnNdJdhEGoHK4Fa0o635yDRIG4kqIQnoVesqlVYL9zZyvpoBJ7t
-RCT5dEA7IzOrg1oYJkK2bVS1FmAwbLGg+LhBoF1JSdJlBTrq/p1hvIbZv97Tujqx
-f36SNI7JAG7cmL3c7IAFrQI932XtCwP39xaEBDG6k5TY8hL4iuO/Qq+n1M0RFxbI
-Qh0UqEL20kCGoE8jypZFVmAGzbdVAaYBlGX+bgUJurSkquLvWL69J1bY73NxW0Qz
-8ppy6rBePm6pUlvscG21h483XjyMnM7k8M4MZ0HMzvaAq07MTFb1wWFZk7Q+ptq4
-NxKfKjLji7gh7MMrZQzvIt6IKTtM1/r+t+FHvpw+PoP7UV31aPcuIYXcv/Fa4nzX
-xeSDwWrruoBa3lwtcHb4yOWHh8qgnaHlIhInD0Q9HWzq1MKLL295q39QpsQZp6F6
-t5b5wR9iWqJDB0BeJsas7a5wFsWqynKKTbDPAYsDP27X
------END CERTIFICATE-----`;
-
-/**
- * TWCA turns out to have TWO different certificates sharing the CN "TWCA
- * CYBER Root CA" in circulation — the self-signed one above, and this
- * cross-signed one (issued BY "TWCA Global Root CA", an even older, more
- * widely-trusted root — a common CA-transition technique, similar to how
- * Let's Encrypt's ISRG Root X1 was cross-signed by DST Root X3 for a
- * while). Independently captured via `openssl s_client -showcerts` against
- * www.tpex.org.tw and confirmed to build a complete, valid 4-tier chain
- * (leaf → SSL Sub-CA → this cert → TWCA Global Root CA below) on its own.
- * Which variant actually gets served can depend on handshake specifics, so
- * both are trusted here rather than betting on one.
- */
-const TWCA_CYBER_ROOT_CA_CROSS_SIGNED_PEM = `-----BEGIN CERTIFICATE-----
 MIIGUTCCBDmgAwIBAgIQQAE0jRkAAAAAAAAMzfmTejANBgkqhkiG9w0BAQwFADBR
 MQswCQYDVQQGEwJUVzESMBAGA1UEChMJVEFJV0FOLUNBMRAwDgYDVQQLEwdSb290
 IENBMRwwGgYDVQQDExNUV0NBIEdsb2JhbCBSb290IENBMB4XDTIyMTIwOTA0MDAy
@@ -164,14 +140,14 @@ KwbQBM0=
 
 // Built once per process (not per request): building the trusted-CA list
 // and Agent is pure/cheap but there's no reason to redo it every call.
-// NOTE: these three certs are valid to Dec 2030 (checked via `openssl x509
+// NOTE: these two certs are valid to Dec 2030 (checked via `openssl x509
 // -noout -dates`) — this hardcoded workaround will need refreshing (repeat
 // `openssl s_client -showcerts -connect www.tpex.org.tw:443` and update the
 // PEM blocks above) once they approach expiry, since Node will go back to
 // failing the same chain-verification error once these certs are no longer
 // valid rather than merely "missing".
 const tpexHttpsAgent = new https.Agent({
-  ca: [...tls.rootCertificates, TWCA_CYBER_ROOT_CA_PEM, TWCA_CYBER_ROOT_CA_CROSS_SIGNED_PEM, TWCA_GLOBAL_ROOT_CA_PEM],
+  ca: [...tls.rootCertificates, TWCA_CYBER_ROOT_CA_PEM, TWCA_GLOBAL_ROOT_CA_PEM],
   keepAlive: true,
 });
 
