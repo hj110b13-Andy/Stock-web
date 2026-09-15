@@ -16,13 +16,16 @@ export interface WatchlistItem {
   order?: number;
 }
 
-/** An entry counts as "held" once it has both a cost basis and a share
- *  count — a plain watch-only entry has neither. This is the single
+/** An entry counts as "held" once it has a real (>0) share count and a cost
+ *  basis on file — a plain watch-only entry has neither. Shares must be
+ *  strictly positive, not just present: a user reported setting 持有股數
+ *  back to 0 and expecting that to mean "I don't hold this anymore", and a
+ *  0 share count can never itself be a real position. This is the single
  *  definition of the 持有/僅關注 split used both to decide which of the two
  *  drag-and-drop groups an item renders in and to auto-move it between them
  *  the moment its holding info is filled in or cleared. */
 export function hasHolding(item: Pick<WatchlistItem, "costBasis" | "shares">): boolean {
-  return item.costBasis != null && item.shares != null;
+  return item.costBasis != null && item.shares != null && item.shares > 0;
 }
 
 const STORAGE_KEY = "stockradar:watchlist";
@@ -104,14 +107,18 @@ export function replaceWatchlist(items: WatchlistItem[]) {
 /**
  * Sets or clears the cost-basis/shares on an existing watchlist entry.
  * `undefined` for either field clears it (e.g. typing a field back to empty
- * should drop that field, not persist a stale value). No-ops if the symbol
- * isn't actually being watched — this edits a holding, it doesn't add one.
+ * should drop that field, not persist a stale value). A share count of 0 is
+ * treated the same as clearing it — "0 shares" isn't a real position, and a
+ * user expects that to mean "I no longer hold this" — which also clears the
+ * now-meaningless 購買價格 along with it, rather than leaving a stale price
+ * on file for a position that no longer exists. No-ops if the symbol isn't
+ * actually being watched — this edits a holding, it doesn't add one.
  *
  * Filling in (or clearing) a holding can move the item between the 持有/
  * 僅關注 groups — when that happens its `order` is reset to the end of
  * whichever group it's now entering, so it doesn't carry over a position
  * that was only ever meaningful relative to its old group's siblings.
- * Staying in the same group (e.g. just correcting a typo in 平均成本)
+ * Staying in the same group (e.g. just correcting a typo in 購買價格)
  * leaves its existing order untouched.
  */
 export function updateHolding(
@@ -124,9 +131,11 @@ export function updateHolding(
   if (idx < 0) return;
   const next = [...list];
   const wasHeld = hasHolding(next[idx]);
-  const willBeHeld = holding.costBasis != null && holding.shares != null;
+  const shares = holding.shares != null && holding.shares > 0 ? holding.shares : undefined;
+  const costBasis = shares != null ? holding.costBasis : undefined;
+  const willBeHeld = hasHolding({ shares, costBasis });
   const order = wasHeld === willBeHeld ? next[idx].order : nextOrderFor(next, willBeHeld);
-  next[idx] = { ...next[idx], costBasis: holding.costBasis, shares: holding.shares, order };
+  next[idx] = { ...next[idx], costBasis, shares, order };
   save(next);
 }
 

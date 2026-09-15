@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import Link from "next/link";
-import type { SearchItem } from "@/lib/data";
+import type { Market, SearchItem } from "@/lib/data";
 import { formatChange, formatPercent, formatPrice, priceDirectionClass } from "@/lib/format";
 import { hasHolding, reorderGroup, updateHolding } from "@/lib/watchlist";
 import WatchlistButton from "./WatchlistButton";
@@ -21,16 +21,60 @@ function groupKey(item: HoldingItem): string {
   return `${item.market}:${item.symbol}`;
 }
 
+/** Money actually put into a position — purchase price × shares, the same
+ *  basis the 總成本 total above the table already uses (not fee-adjusted;
+ *  only 損益平衡價 below factors fees in, since that's the one figure whose
+ *  whole point is to answer "what price do I actually need to break even"). */
+function investedAmount(item: HoldingItem): number {
+  return (item.costBasis ?? 0) * (item.shares ?? 0);
+}
+
+function pnlPercentOf(item: HoldingItem): number | null {
+  if (item.costBasis == null || item.costBasis <= 0) return null;
+  return ((item.price - item.costBasis) / item.costBasis) * 100;
+}
+
+// Standard published TW retail rates (0.1425% commission each way, 0.3%
+// 證券交易稅 on the sell side only) — deliberately the un-discounted
+// textbook figures, not any individual broker's actual (often discounted)
+// rate, since there's no way to know a user's real rate. Disclosed in the
+// column header's title tooltip rather than presented as exact. US holdings
+// skip this entirely: unlike Taiwan, there's no one standard commission/tax
+// structure across US brokers (many are already zero-commission), so
+// guessing a number would be more misleading than showing none.
+const TW_BUY_COMMISSION_RATE = 0.001425;
+const TW_SELL_COMMISSION_RATE = 0.001425;
+const TW_SELL_TAX_RATE = 0.003;
+
+/** The sale price at which total proceeds exactly cover the original
+ *  purchase cost plus both sides' transaction costs — i.e. genuinely
+ *  breaking even after fees, not just "back to the purchase price" (which
+ *  ignores that both buying and selling cost money). Only meaningful with a
+ *  real (>0) purchase price; returns null otherwise rather than a
+ *  misleading "break-even at $0". */
+function breakEvenPrice(item: HoldingItem): number | null {
+  if (item.costBasis == null || item.costBasis <= 0) return null;
+  if (item.market !== "TW") return item.costBasis;
+  return (item.costBasis * (1 + TW_BUY_COMMISSION_RATE)) / (1 - TW_SELL_COMMISSION_RATE - TW_SELL_TAX_RATE);
+}
+
+type HeldSortField = "investedAmount" | "changePercent" | "pnlPercent";
+const HELD_SORT_FIELDS: Record<HeldSortField, (item: HoldingItem) => number> = {
+  investedAmount,
+  changePercent: (item) => item.changePercent,
+  pnlPercent: (item) => pnlPercentOf(item) ?? 0,
+};
+
 /**
  * Watchlist-specific table (not the shared StockTable): adds editable
- * 持有股數/平均成本 so a holding's unrealized P&L can be computed and shown,
+ * 持有股數/購買價格 so a holding's unrealized P&L can be computed and shown,
  * plus (per a user request) splits into two drag-reorderable groups — 持有中
- * (has both shares and cost basis filled in) always rendered above 僅關注
- * (watch-only) — so holdings stay visually prioritized. Dragging is confined
- * to within one group; an item only ever changes groups automatically, by
- * filling in or clearing its holding info in updateHolding(). Editing writes
- * straight to localStorage — there's no separate "save" step, matching how
- * the ☆ button already works elsewhere in the app.
+ * (real shares > 0 and a purchase price on file) always rendered above
+ * 僅關注 (watch-only) — so holdings stay visually prioritized. Dragging is
+ * confined to within one group; an item only ever changes groups
+ * automatically, by filling in or clearing its holding info in
+ * updateHolding(). Editing writes straight to localStorage — there's no
+ * separate "save" step, matching how the ☆ button already works elsewhere.
  */
 export default function WatchlistTable({ items, emptyLabel }: { items: HoldingItem[]; emptyLabel?: string }) {
   if (items.length === 0) {
@@ -40,7 +84,7 @@ export default function WatchlistTable({ items, emptyLabel }: { items: HoldingIt
   const held = items.filter(hasHolding).sort(byOrder);
   const unheld = items.filter((i) => !hasHolding(i)).sort(byOrder);
 
-  const totalCost = held.reduce((sum, i) => sum + i.costBasis! * i.shares!, 0);
+  const totalCost = held.reduce((sum, i) => sum + investedAmount(i), 0);
   const totalValue = held.reduce((sum, i) => sum + i.price * i.shares!, 0);
   const totalPnl = totalValue - totalCost;
   const currency = held[0]?.market === "TW" ? "TWD" : "USD";
@@ -78,8 +122,8 @@ export default function WatchlistTable({ items, emptyLabel }: { items: HoldingIt
           quick glance) makes the swipe discoverable without redesigning the
           table into a stacked mobile layout. sm: hides it once the table
           actually fits without scrolling. */}
-      <p className="text-[13px] text-(--text-muted) sm:hidden">← 可左右滑動查看持有股數／平均成本／損益 →</p>
-      {held.length > 0 && <DraggableGroup title="持有中" items={held} />}
+      <p className="text-[13px] text-(--text-muted) sm:hidden">← 可左右滑動查看持有股數／購買價格／損益 →</p>
+      {held.length > 0 && <DraggableGroup title="持有中" items={held} sortable market={held[0].market} />}
       <DraggableGroup title={held.length > 0 ? "僅關注（未持有）" : undefined} items={unheld} />
     </div>
   );
@@ -93,9 +137,24 @@ export default function WatchlistTable({ items, emptyLabel }: { items: HoldingIt
  *  as it moves the dragged row is spliced past whichever sibling's vertical
  *  midpoint it has crossed — a live "swap as you pass" reorder rather than a
  *  cursor-following floating clone, which is simpler to get right and
- *  plenty for a short personal watchlist. */
-function DraggableGroup({ title, items }: { title?: string; items: HoldingItem[] }) {
+ *  plenty for a short personal watchlist. `sortable` (held group only) adds
+ *  a quick "sort by X, high/low" control that writes its result straight
+ *  into the same persisted order a drag would — a one-shot bulk rearrange
+ *  that further drags can then fine-tune, not a separate always-on mode. */
+function DraggableGroup({
+  title,
+  items,
+  sortable = false,
+  market,
+}: {
+  title?: string;
+  items: HoldingItem[];
+  sortable?: boolean;
+  market?: Market;
+}) {
   const [order, setOrder] = useState<string[]>(() => items.map(groupKey));
+  const [sortField, setSortField] = useState<HeldSortField>("investedAmount");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const draggingKeyRef = useRef<string | null>(null);
   const rowRefs = useRef(new Map<string, HTMLTableRowElement>());
   const byKey = new Map(items.map((i) => [groupKey(i), i]));
@@ -144,13 +203,47 @@ function DraggableGroup({ title, items }: { title?: string; items: HoldingItem[]
     reorderGroup(ordered);
   }
 
+  function applySort(field: HeldSortField, dir: "asc" | "desc") {
+    setSortField(field);
+    setSortDir(dir);
+    const metric = HELD_SORT_FIELDS[field];
+    const sorted = [...items].sort((a, b) => (dir === "desc" ? metric(b) - metric(a) : metric(a) - metric(b)));
+    setOrder(sorted.map(groupKey));
+    reorderGroup(sorted);
+  }
+
   if (items.length === 0) return null;
 
   return (
     <div>
-      {title && <h3 className="mb-1.5 text-xs font-semibold text-(--text-muted)">{title}</h3>}
+      {(title || sortable) && (
+        <div className="mb-1.5 flex items-center justify-between">
+          {title && <h3 className="text-xs font-semibold text-(--text-muted)">{title}</h3>}
+          {sortable && (
+            <div className="flex items-center gap-1.5">
+              <select
+                value={sortField}
+                onChange={(e) => applySort(e.target.value as HeldSortField, sortDir)}
+                className="rounded-md border border-(--gridline) bg-(--surface-2) px-1.5 py-0.5 text-xs"
+              >
+                <option value="investedAmount">依投資金額</option>
+                <option value="changePercent">依漲跌幅</option>
+                <option value="pnlPercent">依損益%</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => applySort(sortField, sortDir === "desc" ? "asc" : "desc")}
+                className="rounded-md border border-(--gridline) bg-(--surface-2) px-1.5 py-0.5 text-xs"
+                title="切換排序方向"
+              >
+                {sortDir === "desc" ? "高→低" : "低→高"}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[600px] text-sm">
+        <table className={`w-full text-sm ${sortable ? "min-w-[760px]" : "min-w-[600px]"}`}>
           <thead>
             <tr className="border-b border-(--gridline) text-left text-(--text-muted)">
               <th className="w-6" />
@@ -159,7 +252,20 @@ function DraggableGroup({ title, items }: { title?: string; items: HoldingItem[]
               <th className="py-2 pr-4 font-medium text-right">股價</th>
               <th className="py-2 pr-4 font-medium text-right">漲跌幅</th>
               <th className="py-2 pr-4 font-medium text-right">持有股數</th>
-              <th className="py-2 pr-4 font-medium text-right">平均成本</th>
+              <th className="py-2 pr-4 font-medium text-right">購買價格</th>
+              {sortable && (
+                <th
+                  className="py-2 pr-4 font-medium text-right"
+                  title={
+                    market === "TW"
+                      ? "假設買賣手續費各0.1425%、賣出證券交易稅0.3%（一般網路券商常見費率，實際依個人開戶條件為準）— 股價高於此價才是真正扣除成本後有賺"
+                      : "美股各券商手續費結構差異大（不少已是免手續費），暫不試算，直接以購買價格顯示"
+                  }
+                >
+                  損益平衡價
+                </th>
+              )}
+              {sortable && <th className="py-2 pr-4 font-medium text-right">投資金額</th>}
               <th className="py-2 pr-4 font-medium text-right">損益</th>
             </tr>
           </thead>
@@ -171,6 +277,7 @@ function DraggableGroup({ title, items }: { title?: string; items: HoldingItem[]
                 <HoldingRow
                   key={key}
                   item={item}
+                  showHoldingColumns={sortable}
                   rowRef={(el) => {
                     if (el) rowRefs.current.set(key, el);
                     else rowRefs.current.delete(key);
@@ -190,12 +297,14 @@ function DraggableGroup({ title, items }: { title?: string; items: HoldingItem[]
 
 function HoldingRow({
   item,
+  showHoldingColumns,
   rowRef,
   onHandlePointerDown,
   onHandlePointerMove,
   onHandlePointerUp,
 }: {
   item: HoldingItem;
+  showHoldingColumns: boolean;
   rowRef: (el: HTMLTableRowElement | null) => void;
   onHandlePointerDown: (e: ReactPointerEvent<HTMLButtonElement>) => void;
   onHandlePointerMove: (e: ReactPointerEvent<HTMLButtonElement>) => void;
@@ -218,7 +327,17 @@ function HoldingRow({
   const costNum = Number(costBasis);
   const hasHoldingInput = shares.trim() !== "" && costBasis.trim() !== "" && Number.isFinite(sharesNum) && Number.isFinite(costNum);
   const pnl = hasHoldingInput ? (item.price - costNum) * sharesNum : null;
+  // Zero (or blank) 購買價格 makes a *percentage* undefined (dividing by
+  // zero) even though the absolute 損益 above is still a perfectly real
+  // number — rendering used to force this through a non-null assertion
+  // assuming "pnl exists" implied "pnlPercent exists too", which crashed
+  // formatPercent(null) the moment someone actually typed 0 as a cost basis
+  // (a user hit this live: the page broke and stayed broken on reload,
+  // since the bad value was already persisted to localStorage). Now shown
+  // as "—" instead of asserted away.
   const pnlPercent = hasHoldingInput && costNum > 0 ? ((item.price - costNum) / costNum) * 100 : null;
+  const breakEven = hasHoldingInput ? breakEvenPrice({ ...item, costBasis: costNum }) : null;
+  const invested = hasHoldingInput ? costNum * sharesNum : null;
 
   return (
     <tr ref={rowRef} className="border-b border-(--gridline) last:border-0 hover:bg-(--page-plane)">
@@ -276,11 +395,21 @@ function HoldingRow({
           className="w-20 rounded border border-(--gridline) bg-(--surface-2) px-1.5 py-1 text-right text-xs tabular-nums focus:outline-none focus:ring-1 focus:ring-(--accent)"
         />
       </td>
+      {showHoldingColumns && (
+        <td className="py-2.5 pr-4 text-right tabular-nums text-(--text-secondary)">
+          {breakEven != null ? formatPrice(breakEven, currency) : "—"}
+        </td>
+      )}
+      {showHoldingColumns && (
+        <td className="py-2.5 pr-4 text-right tabular-nums text-(--text-secondary)">
+          {invested != null ? formatPrice(invested, currency) : "—"}
+        </td>
+      )}
       <td className={`py-2.5 pr-4 text-right tabular-nums ${pnl != null ? priceDirectionClass(pnl) : "text-(--text-muted)"}`}>
         {pnl != null ? (
           <>
             {formatChange(pnl, currency)}
-            <span className="ml-1 text-xs">({formatPercent(pnlPercent!)})</span>
+            {pnlPercent != null && <span className="ml-1 text-xs">({formatPercent(pnlPercent)})</span>}
           </>
         ) : (
           "—"
