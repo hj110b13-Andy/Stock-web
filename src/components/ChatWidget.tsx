@@ -12,13 +12,60 @@ interface ChatMessage {
 
 const SUGGESTIONS = ["2330 最近走勢如何？", "AAPL 現在多少錢？", "今天大盤表現如何？"];
 
+// Web Speech API 沒有內建在 TypeScript 的 lib.dom.d.ts 裡（各瀏覽器支援度也不一致，
+// Chrome/Edge 用 webkit 前綴），這裡只宣告本元件實際會用到的最小介面，避免用 `any`。
+interface SpeechRecognitionResultEvent extends Event {
+  results: {
+    length: number;
+    [index: number]: { length: number; [index: number]: { transcript: string } };
+  };
+}
+
+interface SpeechRecognitionErrorEvent extends Event {
+  error: string;
+}
+
+interface SpeechRecognitionInstance extends EventTarget {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  maxAlternatives: number;
+  start: () => void;
+  stop: () => void;
+  onresult: ((event: SpeechRecognitionResultEvent) => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEvent) => void) | null;
+  onend: (() => void) | null;
+}
+
+type SpeechRecognitionConstructor = new () => SpeechRecognitionInstance;
+
+declare global {
+  interface Window {
+    SpeechRecognition?: SpeechRecognitionConstructor;
+    webkitSpeechRecognition?: SpeechRecognitionConstructor;
+  }
+}
+
+// 長輩看得懂的簡短說法，涵蓋常見的語音辨識失敗情境。
+const VOICE_ERROR_MESSAGES: Record<string, string> = {
+  "not-allowed": "請允許使用麥克風，才能用語音輸入喔。",
+  "permission-denied": "請允許使用麥克風，才能用語音輸入喔。",
+  "no-speech": "沒有偵測到聲音，請再靠近一點、慢慢說一次。",
+  "audio-capture": "找不到麥克風，請確認裝置有連接麥克風。",
+  network: "網路連線有問題，請稍後再試一次。",
+  aborted: "語音輸入已取消。",
+};
+
 export default function ChatWidget() {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [contextSymbol, setContextSymbol] = useState<AskAboutDetail | null>(null);
+  const [listening, setListening] = useState(false);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
 
   useEffect(() => {
     function handleAskAbout(e: Event) {
@@ -34,6 +81,59 @@ export default function ChatWidget() {
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, loading]);
+
+  // 元件卸載時務必停止語音辨識，避免瀏覽器繼續在背景錄音、造成資源浪費或殘留的
+  // onresult/onend callback 觸發已經不存在的 state setter。
+  useEffect(() => {
+    return () => {
+      recognitionRef.current?.stop();
+    };
+  }, []);
+
+  function toggleVoiceInput() {
+    if (listening) {
+      recognitionRef.current?.stop();
+      return;
+    }
+
+    const SpeechRecognitionCtor = window.SpeechRecognition ?? window.webkitSpeechRecognition;
+    if (!SpeechRecognitionCtor) {
+      // 不悶不吭聲：偵測不到 API 時明確告知使用者，不要讓按鈕看起來毫無反應。
+      setVoiceError("您的瀏覽器不支援語音輸入，請改用輸入文字（建議改用電腦版 Chrome 或 Edge 瀏覽器）。");
+      return;
+    }
+
+    setVoiceError(null);
+    const recognition = new SpeechRecognitionCtor();
+    recognition.lang = "zh-TW";
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onresult = (event) => {
+      const transcript = event.results[0]?.[0]?.transcript?.trim();
+      if (transcript) {
+        // 只填入輸入框、不自動送出——語音辨識偶爾會有錯字，讓使用者先看過再按送出。
+        setInput(transcript);
+      }
+    };
+    recognition.onerror = (event) => {
+      setVoiceError(VOICE_ERROR_MESSAGES[event.error] ?? "語音辨識發生錯誤，請再試一次或改用輸入文字。");
+      setListening(false);
+    };
+    recognition.onend = () => {
+      setListening(false);
+    };
+
+    recognitionRef.current = recognition;
+    try {
+      recognition.start();
+      setListening(true);
+    } catch {
+      setVoiceError("語音輸入啟動失敗，請再試一次或改用輸入文字。");
+      setListening(false);
+    }
+  }
 
   async function send(question: string, holdings?: ReturnType<typeof getWatchlist>) {
     const trimmed = question.trim();
@@ -153,28 +253,51 @@ export default function ChatWidget() {
             {loading && <p className="text-xs text-(--text-muted)">思考中…</p>}
           </div>
 
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              send(input);
-            }}
-            className="flex gap-2 border-t border-(--gridline) p-3"
-          >
-            <input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="輸入你的問題…"
-              maxLength={500}
-              className="flex-1 rounded-md border border-(--gridline) bg-(--surface-2) px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-(--accent)"
-            />
-            <button
-              type="submit"
-              disabled={loading}
-              className="rounded-md bg-(--accent) px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+          <div className="border-t border-(--gridline) p-3">
+            {(listening || voiceError) && (
+              <p
+                className={`mb-2 text-xs font-medium ${listening ? "text-(--accent)" : "text-(--price-up)"}`}
+                role="status"
+              >
+                {listening ? "🎤 聆聽中…請說話" : `⚠️ ${voiceError}`}
+              </p>
+            )}
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                send(input);
+              }}
+              className="flex gap-2"
             >
-              送出
-            </button>
-          </form>
+              <input
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder="輸入你的問題，或按🎤說話…"
+                maxLength={500}
+                className="min-w-0 flex-1 rounded-md border border-(--gridline) bg-(--surface-2) px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-(--accent)"
+              />
+              <button
+                type="button"
+                onClick={toggleVoiceInput}
+                aria-label={listening ? "停止語音輸入" : "開始語音輸入"}
+                title={listening ? "停止語音輸入" : "語音輸入（用講的問問題）"}
+                className={`rounded-md px-3 py-2 text-sm font-medium ${
+                  listening
+                    ? "animate-pulse bg-(--price-up) text-white"
+                    : "border border-(--gridline) bg-(--surface-2) text-(--text-primary) hover:bg-(--page-plane)"
+                }`}
+              >
+                {listening ? "⏹" : "🎤"}
+              </button>
+              <button
+                type="submit"
+                disabled={loading}
+                className="rounded-md bg-(--accent) px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+              >
+                送出
+              </button>
+            </form>
+          </div>
         </div>
       )}
 

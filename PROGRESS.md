@@ -246,6 +246,71 @@ Google 登入（選用）、全站密碼保護（`SITE_PASSWORD`）、全站 SEO
 
 ## 工作日誌（新到舊，只列有意義的變更；commit hash 對應 `git log`）
 
+### 2026-09-15（深夜，續）：AI問答新增語音輸入按鈕，讓長輩用講話取代打字
+
+使用者反映「AI問答要加入語音輸入按鈕，因為長輩打字速度慢，讓他們直接講話就能輸入與AI對話」。
+
+**做了什麼**：在 `src/components/ChatWidget.tsx`（右下角浮動 AI 對話小工具）的輸入框旁邊
+新增一顆麥克風按鈕（🎤），使用瀏覽器原生 Web Speech API
+（`window.SpeechRecognition` / `window.webkitSpeechRecognition`，語言設為 `zh-TW`），不需要
+任何後端 API 或第三方付費服務：
+- 點一下開始辨識，按鈕變色（紅底、`animate-pulse` 閃爍）並顯示「🎤 聆聽中…請說話」；
+  再點一次或辨識自動結束（`onend`）都會恢復成待命狀態。
+- 辨識完成（`onresult`）只把文字填入輸入框、**不自動送出**，讓使用者能先看過有沒有錯字
+  再按送出（語音辨識偶爾會有錯字，長輩需要能先確認）。
+- **相容性處理**：按鈕一律顯示（不會因為偵測不到 API 就消失讓人以為壞了），點擊時才用
+  `window.SpeechRecognition ?? window.webkitSpeechRecognition` 現場判斷，偵測不到就顯示
+  「您的瀏覽器不支援語音輸入，請改用輸入文字（建議改用電腦版 Chrome 或 Edge 瀏覽器）」。
+- **錯誤處理**（`onerror`）：依 `event.error` 對應成長輩看得懂的繁中提示，例如
+  `not-allowed`/`permission-denied` →「請允許使用麥克風，才能用語音輸入喔」、`no-speech` →
+  「沒有偵測到聲音，請再靠近一點、慢慢說一次」、`audio-capture` →「找不到麥克風，請確認
+  裝置有連接麥克風」、`network` →「網路連線有問題，請稍後再試一次」，其餘一律顯示通用的
+  「語音辨識發生錯誤，請再試一次或改用輸入文字」，訊息用 `role="status"` 的文字列顯示在
+  輸入框正上方，不會讓使用者對著空白畫面不知道發生什麼事。
+- 元件卸載時（`useEffect` 的 cleanup）呼叫 `recognitionRef.current?.stop()`，避免背景持續
+  錄音或殘留的 callback 打到已經不存在的 state setter。
+
+**過程中發現並修好一個真實的排版 bug**：原本的表單只有「輸入框（flex-1）＋送出按鈕」兩個
+元素，加入麥克風按鈕變成三個元素後，用 Playwright 實際量測發現「送出」按鈕被擠出聊天面板
+的可視範圍外（面板右邊界在 x≈481，但送出按鈕跑到 x≈528）——根因是 `<input>` 只有
+`flex-1`、沒有 `min-w-0`，瀏覽器對 flex 項目預設 `min-width: auto`，內容的最小內在寬度會
+擋住它繼續縮小，於是瀏覽器選擇讓整排溢出容器而不是把 input 縮小，後面的送出按鈕就被推到
+面板外面被 `overflow-hidden` 裁掉、完全看不到也點不到。修法是幫 input 加上 `min-w-0`
+（Tailwind class），讓它能正常縮到剩餘寬度。這是「規則一：卡關升級流程」定義下的同一類
+問題只失敗了 1 次就自己找到根因修好，沒有觸發升級到派 agent 查解法的門檻。
+
+**怎麼驗證的**：
+1. `npm run build` 通過，沒有 TypeScript 錯誤（`SpeechRecognition` 相關型別是自己在
+   `ChatWidget.tsx` 內宣告的最小介面，沒有引入額外套件）。
+2. 因為 Web Speech API 需要真實麥克風硬體與使用者說話，Playwright 自動化瀏覽器沒有真麥克風
+   輸入，沒辦法端對端測「說話→正確辨識成文字」這一段（如任務所預期）。改用
+   `npm run build && npm run start` 在本機（`localhost:3100`）起服務，寫 Playwright 腳本用
+   `page.addInitScript` 抽換 `window.SpeechRecognition` 成假的類別（`extends EventTarget`），
+   模擬四種情境全部通過：
+   - 桌面寬度（500px）：麥克風按鈕確實出現、位置在輸入框與送出按鈕之間、大小
+     53×44.75px，跟送出/輸入框同一排、視覺風格一致（同樣的 `rounded-md`／邊框樣式）。
+   - 手機寬度（390px）：三個元素（輸入框+麥克風+送出）全部落在可視範圍內
+     （送出按鈕右邊界 355.75 < 390），沒有 clipping。
+   - 完全移除 `SpeechRecognition`/`webkitSpeechRecognition`：點擊麥克風按鈕後正確顯示
+     「您的瀏覽器不支援語音輸入…」提示文字。
+   - 假的 `SpeechRecognition` 觸發 `onerror({error:'not-allowed'})`（模擬麥克風權限被拒）：
+     正確顯示「請允許使用麥克風，才能用語音輸入喔。」。
+   - 假的 `SpeechRecognition` 觸發 `onresult` 回傳中文文字：輸入框正確被填入辨識結果，
+     且訊息泡泡數量維持 0（確認沒有自動送出）。
+3. 程式碼邏輯檢查：`onresult`/`onerror`/`onend` 都有接上對應的 state 更新
+   （`setInput`/`setVoiceError`/`setListening`），卸載時的 `useEffect` cleanup 有呼叫
+   `recognition.stop()`。**還沒有派 Opus 規則三對這項新功能做獨立複查**，下一個接手的
+   裝置/對話如果要正式回報這項也「更新完成」，記得補上這一步。
+
+**已知限制**：Web Speech API 目前主要 Chrome/Edge（含手機版 Chrome）支援較好，Firefox
+桌面版預設不支援、Safari/iOS 支援度不穩定——這些瀏覽器點擊麥克風按鈕會看到「您的瀏覽器
+不支援語音輸入」的提示並改用打字，這是刻意的設計（誠實顯示限制，不是 bug）。另外這次
+只做「本機模擬情境」驗證，還沒有機會用真人在真實有麥克風的瀏覽器上完整測過「說話→正確
+辨識成中文文字」這條路徑本身的辨識準確度（那部分是 Chrome/Edge 內建語音服務的能力，
+不是本站程式碼能控制的範圍），如果之後使用者實際用語音問問題時發現辨識常常辨識錯，
+需要另外評估是不是要換成雲端語音辨識服務（會牽涉到後端 API 與費用，跟現在「純瀏覽器端
+免費」的設計不同，是之後才需要考慮的產品決策）。
+
 ### 2026-09-15（深夜）：Opus 規則三對今日整批功能的獨立複查——10 項全數確認正常，另外抓到並修好 1 個匯出 CSV 的缺口（`aa192bf`）
 
 依 CLAUDE.md 規則三派出的 Opus agent，用 Playwright 實際驅動 Chromium 在正式站
@@ -2681,6 +2746,16 @@ Google 登入」、聊天輸入框是 `<input>` 不是 `<textarea>`、產業篩�
 
 ## 目前已知問題
 
+- **【2026-09-15 深夜新增，已自行驗證，還沒派 Opus 規則三複查】AI問答語音輸入按鈕**：
+  `ChatWidget.tsx` 新增的麥克風按鈕本身（顯示位置/大小/不支援時的提示/權限被拒的提示/
+  辨識結果自動填入輸入框不自動送出）都已用 Playwright 抽換假的 `SpeechRecognition`
+  模擬驗證過，`npm run build` 通過。**已知限制**：Web Speech API 主要 Chrome/Edge 支援
+  較好，Firefox 桌面版/Safari/iOS 支援度不穩定，這些瀏覽器點麥克風會看到「您的瀏覽器
+  不支援語音輸入」提示（刻意設計，非 bug）。因為 Playwright 環境沒有真實麥克風，這次
+  沒辦法端對端測「說話→正確辨識成中文」這條路徑本身的辨識準確度，那部分是瀏覽器內建
+  語音服務的能力範圍，如果使用者實際用起來覺得常辨識錯，需要另外評估產品方向（例如
+  改用付費雲端語音辨識），屬於之後才需要的決策。下一個接手的裝置記得先派 Opus 規則三
+  對這項新功能做一次獨立複查，確認修好後才能正式回報「更新完成」。
 - **【已於 2026-09-15 深夜完成 Opus 規則三獨立複查，確認修好】漲跌停鎖住的股票被誤判成
   0% 漲跌幅（`527ca9a` 內含，見上方「續」那則工作日誌）**：使用者以驊宏資 6148 回報。
   已修好 `twse.ts`/`tpex.ts` 的 `trade.z` 備援。Opus 於當日深夜用 Playwright 在正式站
