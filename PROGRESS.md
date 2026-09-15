@@ -246,6 +246,30 @@ Google 登入（選用）、全站密碼保護（`SITE_PASSWORD`）、全站 SEO
 
 ## 工作日誌（新到舊，只列有意義的變更；commit hash 對應 `git log`）
 
+### 2026-09-15（晚間，第四續）：關注名單拖曳排序＋持有/僅關注分組＋總成本/總市值——已用 Playwright 在正式站驗證
+
+使用者要求（詳見上方 `158ab99` 那次 commit 說明）：持有優先在上、可拖曳排序、
+分兩類且不能互相拖曳、填寫/清除持股自動換類；另外總損益旁要加總成本、總市值。
+
+正式站驗證（seed 4 檔台股：2 檔已有 costBasis/shares、2 檔純關注，刻意用「錯的」
+insertion order 確認分組不是巧合）：
+- 畫面正確分成「持有中」「僅關注（未持有）」兩個標題，持有中永遠在上面。
+- 總成本/總市值/總損益三個數字都正確顯示且數字對得上（16,000 / 79,150 / +63,150 +394.69%）。
+- 用滑鼠模擬拖曳（Pointer Events，非原生HTML5 dnd）成功把持有組內第2檔拖到第1檔
+  上面，`localStorage` 立即寫入新的 order 值，畫面同步更新，僅關注組完全不受影響。
+- 手動填入持股（股數+成本）後，該檔立刻從「僅關注」移到「持有中」；清空股數後
+  又立刻移回「僅關注」，兩個方向的自動換組都正常。
+- **測試過程一次誤判**：用 `page.addInitScript()` 重新整理頁面驗證「拖曳結果有沒
+  有persist」時，`addInitScript` 本身會在每次 reload 都重新執行、把 localStorage
+  蓋回原始種子資料——這是我自己測試腳本的偽陽性，不是產品的 bug（改成直接在
+  drag 後、reload 前後都用 `page.evaluate` 讀 localStorage，證實資料其實有正確
+  persist，只是被自己的 addInitScript 事後蓋掉）。**教訓：用 `addInitScript` 做
+  localStorage 種子資料時，不能拿它來測試「reload 後資料還在不在」，因為它會在
+  每次 reload 都重新播種一次，要測 reload persistence 得改用 `page.evaluate()`
+  一次性寫入。**
+
+`npx tsc --noEmit`、`npx eslint`、`npx next build` 全部通過。
+
 ### 2026-09-15（晚間，再續）：價量關係篩選不用再乾等5個真實交易日——新增一次性回填功能
 
 使用者反映「現在也能查到前幾筆資料，為什麼還要等5天?我要現在就能用」——原本
