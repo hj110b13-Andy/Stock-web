@@ -8,6 +8,21 @@ export interface WatchlistItem {
   costBasis?: number;
   /** Shares held, in the same per-share unit the quote price is already denominated in (not 張). */
   shares?: number;
+  /** Manual drag-and-drop position, relative only to other items in the same
+   *  group (see `hasHolding` below) — a held item's order is never compared
+   *  against a watch-only item's. Missing/undefined sorts as 0, which keeps
+   *  pre-existing entries (added before this field existed) in their
+   *  original insertion order until the user actually drags something. */
+  order?: number;
+}
+
+/** An entry counts as "held" once it has both a cost basis and a share
+ *  count — a plain watch-only entry has neither. This is the single
+ *  definition of the 持有/僅關注 split used both to decide which of the two
+ *  drag-and-drop groups an item renders in and to auto-move it between them
+ *  the moment its holding info is filled in or cleared. */
+export function hasHolding(item: Pick<WatchlistItem, "costBasis" | "shares">): boolean {
+  return item.costBasis != null && item.shares != null;
 }
 
 const STORAGE_KEY = "stockradar:watchlist";
@@ -58,16 +73,26 @@ export function isWatched(symbol: string, market: Market): boolean {
   return getWatchlist().some((i) => i.symbol === symbol && i.market === market);
 }
 
+/** Lowest `order` that puts a new entry after every existing item in the
+ *  same group (held vs. watch-only) — 0 when the group is currently empty. */
+function nextOrderFor(list: WatchlistItem[], held: boolean): number {
+  const siblings = list.filter((i) => hasHolding(i) === held);
+  if (siblings.length === 0) return 0;
+  return Math.max(...siblings.map((i) => i.order ?? 0)) + 1;
+}
+
 export function toggleWatch(item: WatchlistItem): boolean {
   const list = getWatchlist();
   const idx = list.findIndex((i) => i.symbol === item.symbol && i.market === item.market);
   if (idx >= 0) {
-    list.splice(idx, 1);
-    save(list);
+    const next = [...list];
+    next.splice(idx, 1);
+    save(next);
     return false;
   }
-  list.push(item);
-  save(list);
+  // A freshly-starred stock never arrives with holding info already filled
+  // in, so it always starts in the watch-only group.
+  save([...list, { ...item, order: nextOrderFor(list, false) }]);
   return true;
 }
 
@@ -81,6 +106,13 @@ export function replaceWatchlist(items: WatchlistItem[]) {
  * `undefined` for either field clears it (e.g. typing a field back to empty
  * should drop that field, not persist a stale value). No-ops if the symbol
  * isn't actually being watched — this edits a holding, it doesn't add one.
+ *
+ * Filling in (or clearing) a holding can move the item between the 持有/
+ * 僅關注 groups — when that happens its `order` is reset to the end of
+ * whichever group it's now entering, so it doesn't carry over a position
+ * that was only ever meaningful relative to its old group's siblings.
+ * Staying in the same group (e.g. just correcting a typo in 平均成本)
+ * leaves its existing order untouched.
  */
 export function updateHolding(
   symbol: string,
@@ -91,6 +123,27 @@ export function updateHolding(
   const idx = list.findIndex((i) => i.symbol === symbol && i.market === market);
   if (idx < 0) return;
   const next = [...list];
-  next[idx] = { ...next[idx], costBasis: holding.costBasis, shares: holding.shares };
+  const wasHeld = hasHolding(next[idx]);
+  const willBeHeld = holding.costBasis != null && holding.shares != null;
+  const order = wasHeld === willBeHeld ? next[idx].order : nextOrderFor(next, willBeHeld);
+  next[idx] = { ...next[idx], costBasis: holding.costBasis, shares: holding.shares, order };
+  save(next);
+}
+
+/**
+ * Persists a new relative order for a set of items that all belong to the
+ * same group (all held, or all watch-only) — called once a drag-and-drop
+ * reorder gesture ends. Items not included keep their existing order;
+ * mixing items from both groups into one call would incorrectly compare
+ * their positions against each other, so callers must only ever pass one
+ * group's items at a time.
+ */
+export function reorderGroup(orderedItems: WatchlistItem[]): void {
+  const list = getWatchlist();
+  const next = [...list];
+  orderedItems.forEach((item, index) => {
+    const idx = next.findIndex((i) => i.symbol === item.symbol && i.market === item.market);
+    if (idx >= 0) next[idx] = { ...next[idx], order: index };
+  });
   save(next);
 }

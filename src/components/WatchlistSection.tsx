@@ -4,7 +4,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import WatchlistTable, { type HoldingItem } from "@/components/WatchlistTable";
 import MarketTabs from "@/components/MarketTabs";
 import type { Quote, SearchItem } from "@/lib/data";
-import { WATCHLIST_CHANGED_EVENT, getWatchlist, type WatchlistItem } from "@/lib/watchlist";
+import { hasHolding, WATCHLIST_CHANGED_EVENT, getWatchlist, type WatchlistItem } from "@/lib/watchlist";
 
 function subscribe(callback: () => void) {
   window.addEventListener(WATCHLIST_CHANGED_EVENT, callback);
@@ -21,7 +21,6 @@ function subscribe(callback: () => void) {
 const POLL_MS = 20_000;
 
 const EMPTY: WatchlistItem[] = [];
-type SortBy = "changePercent" | "volume" | "price" | "name";
 
 function exportCsv(items: SearchItem[]) {
   const header = ["市場", "代碼", "名稱", "股價", "漲跌幅(%)", "成交量"];
@@ -57,8 +56,6 @@ export default function WatchlistSection() {
     () => EMPTY // server snapshot: localStorage isn't available during SSR
   );
   const [items, setItems] = useState<SearchItem[] | null>(null); // null = not fetched yet for the current list
-  const [sortBy, setSortBy] = useState<SortBy>("changePercent");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
   useEffect(() => {
     if (list.length === 0) return;
@@ -117,11 +114,14 @@ export default function WatchlistSection() {
     .filter((i) => holdingByKey.has(`${i.market}:${i.symbol.toUpperCase()}`))
     .map((i) => {
       const holding = holdingByKey.get(`${i.market}:${i.symbol.toUpperCase()}`);
-      return { ...i, costBasis: holding?.costBasis, shares: holding?.shares };
+      return { ...i, costBasis: holding?.costBasis, shares: holding?.shares, order: holding?.order };
     })
+    // Held-first, then each group in its own manual drag order — matches
+    // what WatchlistTable renders, so the CSV export (which uses this same
+    // array) comes out in the same order the user actually sees on screen.
     .sort((a, b) => {
-      const diff = sortBy === "name" ? a.name.localeCompare(b.name) : a[sortBy] - b[sortBy];
-      return sortDir === "desc" ? -diff : diff;
+      const heldDiff = Number(hasHolding(b)) - Number(hasHolding(a));
+      return heldDiff !== 0 ? heldDiff : (a.order ?? 0) - (b.order ?? 0);
     });
 
   return (
@@ -129,32 +129,13 @@ export default function WatchlistSection() {
       <div className="mb-2 flex items-center justify-between">
         <h2 className="font-semibold">我的關注</h2>
         {displayItems.length > 0 && (
-          <div className="flex items-center gap-2">
-            <select
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value as SortBy)}
-              className="rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1 text-xs"
-            >
-              <option value="changePercent">依漲跌幅</option>
-              <option value="volume">依成交量</option>
-              <option value="price">依股價</option>
-              <option value="name">依名稱</option>
-            </select>
-            <button
-              onClick={() => setSortDir((d) => (d === "desc" ? "asc" : "desc"))}
-              className="rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1 text-xs"
-              title="切換排序方向"
-            >
-              {sortDir === "desc" ? "高→低" : "低→高"}
-            </button>
-            <button
-              onClick={() => exportCsv(displayItems)}
-              className="rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1 text-xs hover:bg-(--page-plane)"
-              title="匯出成 CSV"
-            >
-              匯出 CSV
-            </button>
-          </div>
+          <button
+            onClick={() => exportCsv(displayItems)}
+            className="rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1 text-xs hover:bg-(--page-plane)"
+            title="匯出成 CSV"
+          >
+            匯出 CSV
+          </button>
         )}
       </div>
       {list.length === 0 ? (
