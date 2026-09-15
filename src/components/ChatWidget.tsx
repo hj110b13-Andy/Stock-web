@@ -12,6 +12,16 @@ interface ChatMessage {
 
 const SUGGESTIONS = ["2330 最近走勢如何？", "AAPL 現在多少錢？", "今天大盤表現如何？"];
 
+// 使用者要求「語音輸入要手動停止，不要自己斷掉錄音」。continuous=true 已經能讓瀏覽器
+// 在偵測到停頓後不自動結束辨識，但部分瀏覽器實作即使 continuous=true，長時間靜音後仍會
+// 自己觸發 onend（不是使用者按停止鍵造成的）。這種情況要自動重新啟動辨識繼續聆聽，但要
+// 設上限避免麥克風完全故障時無限重啟造成迴圈，超過上限就放棄並提示使用者自己再按一次。
+const MAX_VOICE_RESTART_ATTEMPTS = 3;
+
+// 輸入框改成可增高的 textarea 後，最多讓它長到這個高度（約 5 行文字），超過就內部捲動，
+// 避免把整個聊天面板（有 max-h-[calc(100vh-6rem)] 的尺寸限制）撐爆版面。
+const CHAT_TEXTAREA_MAX_HEIGHT_PX = 112;
+
 // Web Speech API 沒有內建在 TypeScript 的 lib.dom.d.ts 裡（各瀏覽器支援度也不一致，
 // Chrome/Edge 用 webkit 前綴），這裡只宣告本元件實際會用到的最小介面，避免用 `any`。
 interface SpeechRecognitionResultEvent extends Event {
@@ -68,6 +78,21 @@ export default function ChatWidget() {
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // 使用者按下🎤開始講話「當下」輸入框裡已經有的文字（例如自己先打一半、或從個股頁
+  // 「問AI關於」帶進來的預填問句）——語音辨識的內容要接在這段後面，不能蓋掉。
+  const voiceBaseTextRef = useRef("");
+  // 這一輪辨識（從上次 start() 到現在）目前為止聽到的完整內容。continuous=true 時
+  // event.results 是「這次 start() 之後的累積結果」，每次 onresult 都要整段重建，
+  // 不能用「接在舊 input 後面」的方式疊加，否則同一段話會被重複疊加好幾次。
+  const lastFinalTranscriptRef = useRef("");
+  // true = 使用者自己按停止鈕、或關閉面板／卸載元件；false = 辨識還在使用者要求的
+  // 「聆聽中」狀態，只是瀏覽器自己把這次的 recognition 實例結束掉（例如長時間靜音）。
+  // onend 靠這個旗標判斷「使用者是不是真的要停止」，是不是要自動重新啟動繼續聆聽。
+  const stoppedByUserRef = useRef(true);
+  // 連續自動重啟的次數，成功聽到內容（onresult）就歸零；超過上限代表麥克風/辨識服務
+  // 一直啟動失敗，放棄自動重啟，避免無限迴圈。
+  const restartAttemptsRef = useRef(0);
 
   useEffect(() => {
     function handleAskAbout(e: Event) {
@@ -84,10 +109,26 @@ export default function ChatWidget() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, loading]);
 
+  // 輸入框改成 textarea 後要隨內容自動增高，設上限高度、超過就內部捲動。這個 effect
+  // 涵蓋所有讓 `input` state 改變的路徑——不只是使用者自己打字（onChange 也會觸發，
+  // 但這裡統一處理即可），還包括語音辨識填入文字、「問AI關於」預填問句、送出後清空——
+  // 這些都是用 setInput() 直接改 state，不會經過 textarea 自己的 onChange，如果只在
+  // onChange 裡調整高度，這些情境就會被漏掉、長文字被裁切看不到。
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, CHAT_TEXTAREA_MAX_HEIGHT_PX)}px`;
+  }, [input]);
+
   // 徹底收掉目前這個語音辨識實例：先把 callback 拆掉再 stop()。
   // 拆 callback 是必要的——stop() 之後瀏覽器仍會非同步補發一次 onend，如果那時
   // 使用者已經重新開始了新一輪辨識，殘留的 onend 會把新一輪的 listening 狀態誤關掉。
   const teardownRecognition = useCallback(() => {
+    // 保險：不管是不是使用者主動按停止鍵，只要走到「徹底收掉」這條路（面板關閉、
+    // 元件卸載、或開始新一輪之前的清理），一律視為「使用者要停止」，避免萬一
+    // onend 在 callback 被拆掉之前搶先觸發、又跑去嘗試自動重啟辨識。
+    stoppedByUserRef.current = true;
     const recognition = recognitionRef.current;
     recognitionRef.current = null;
     if (!recognition) return;
@@ -124,6 +165,9 @@ export default function ChatWidget() {
 
   function toggleVoiceInput() {
     if (listening) {
+      // 使用者主動按停止鈕：標記起來，讓稍後觸發的 onend 知道「這是使用者要的結束」，
+      // 不要去嘗試自動重新啟動。
+      stoppedByUserRef.current = true;
       recognitionRef.current?.stop();
       return;
     }
@@ -141,35 +185,82 @@ export default function ChatWidget() {
     teardownRecognition();
     const recognition = new SpeechRecognitionCtor();
     recognition.lang = "zh-TW";
-    recognition.continuous = false;
+    // 使用者要求「開始錄音後要直到手動按停止才結束，不要自己斷掉」。continuous=true
+    // 讓瀏覽器在偵測到一段話講完（停頓）後不會自動結束辨識，而是繼續聆聽下一段。
+    recognition.continuous = true;
     recognition.interimResults = false;
     recognition.maxAlternatives = 1;
 
+    // 重置這一輪語音工作階段的狀態：捕捉「開始講話當下」輸入框已有的文字，之後
+    // 辨識到的內容都接在這段後面，不會蓋掉使用者原本打好或預填的問句。
+    voiceBaseTextRef.current = input.trim();
+    lastFinalTranscriptRef.current = "";
+    stoppedByUserRef.current = false;
+    restartAttemptsRef.current = 0;
+
     recognition.onresult = (event) => {
-      const transcript = event.results[0]?.[0]?.transcript?.trim();
-      if (transcript) {
-        // 只填入輸入框、不自動送出——語音辨識偶爾會有錯字，讓使用者先看過再按送出。
-        // 接在既有文字後面而不是整個蓋掉：輸入框裡原本就可能有東西——使用者自己打到
-        // 一半改用講的，或是從個股頁按「問 AI 關於 X」帶進來的預填問句——直接覆蓋會
-        // 把那些內容無聲無息地清掉。手機內建鍵盤的語音輸入也是插入而非清空，接在後面
-        // 比較符合使用者既有的習慣。
-        setInput((prev) => {
-          const base = prev.trim();
-          return base ? `${base} ${transcript}` : transcript;
-        });
+      // continuous=true 時，每次 onresult 收到的 event.results 是「這次 start() 以來
+      // 累積至今」的完整結果，不是只有新增的那一小段——所以每次都要整段重建，不能
+      // 用「接在上一次 setInput 結果後面」的方式疊加，否則同一段話會被重複疊加。
+      let combinedFinal = "";
+      for (let i = 0; i < event.results.length; i++) {
+        const segment = event.results[i]?.[0]?.transcript?.trim();
+        if (segment) combinedFinal = combinedFinal ? `${combinedFinal} ${segment}` : segment;
       }
+      if (!combinedFinal) return;
+      lastFinalTranscriptRef.current = combinedFinal;
+      // 有聽到內容了，代表辨識運作正常，重啟計數器歸零——避免「講幾句話、中間停頓
+      // 幾次」被誤算成連續失敗，提早觸發「放棄自動重啟」。
+      restartAttemptsRef.current = 0;
+      const base = voiceBaseTextRef.current.trim();
+      // 只填入輸入框、不自動送出——語音辨識偶爾會有錯字，讓使用者先看過再按送出。
+      setInput(base ? `${base} ${combinedFinal}` : combinedFinal);
     };
     recognition.onerror = (event) => {
+      if (event.error === "no-speech" && !stoppedByUserRef.current) {
+        // 只是長輩講話中間停頓太久、暫時沒偵測到聲音——不是使用者要停止，維持
+        // 「聆聽中」，不顯示錯誤。要不要重啟交給 onend 判斷（部分瀏覽器 no-speech
+        // 之後還是會接著觸發 onend，即使已經設定 continuous=true）。
+        return;
+      }
       setListening(false);
       if (event.error === "aborted") {
         // 使用者自己喊停（按停止鈕或關閉面板），不是錯誤，不要跳紅字嚇人。
+        stoppedByUserRef.current = true;
         setVoiceError(null);
         return;
       }
+      // 真正發生錯誤（權限被拒、找不到麥克風、網路問題等），之後 onend 不該再嘗試
+      // 自動重啟，讓使用者自己判斷要不要重新按🎤。
+      stoppedByUserRef.current = true;
       setVoiceError(VOICE_ERROR_MESSAGES[event.error] ?? "語音辨識發生錯誤，請再試一次或改用輸入文字。");
     };
     recognition.onend = () => {
-      setListening(false);
+      if (stoppedByUserRef.current) {
+        setListening(false);
+        return;
+      }
+      // 使用者還沒按停止鍵，瀏覽器卻自己把這次辨識結束了（例如長時間靜音）——依需求
+      // 「不要自己斷掉錄音」，把目前為止聽到的內容併入下一輪的基底文字，重新啟動同一個
+      // 實例繼續聆聽，而不是就此中斷、把狀態切回「未聆聽」。
+      if (restartAttemptsRef.current >= MAX_VOICE_RESTART_ATTEMPTS) {
+        setListening(false);
+        setVoiceError("語音輸入不斷中斷，請再按一次🎤重新開始。");
+        return;
+      }
+      restartAttemptsRef.current += 1;
+      const base = voiceBaseTextRef.current.trim();
+      const heard = lastFinalTranscriptRef.current.trim();
+      voiceBaseTextRef.current = base ? (heard ? `${base} ${heard}` : base) : heard;
+      lastFinalTranscriptRef.current = "";
+      try {
+        recognition.start();
+        // listening 狀態維持不變（一直是 true）：對使用者來說這只是背景的自動接續，
+        // 畫面上應該完全看不出中斷過。
+      } catch {
+        setListening(false);
+        setVoiceError("語音輸入中斷，請再按一次🎤重新開始。");
+      }
     };
 
     recognitionRef.current = recognition;
@@ -316,9 +407,12 @@ export default function ChatWidget() {
                 e.preventDefault();
                 send(input);
               }}
-              className="flex gap-2"
+              // items-end：textarea 隨文字增高時，麥克風/送出按鈕要貼齊底部，不要被
+              // 拉著一起變高、也不要卡在整個輸入區塊的垂直正中間看起來很奇怪。
+              className="flex items-end gap-2"
             >
-              <input
+              <textarea
+                ref={textareaRef}
                 value={input}
                 onChange={(e) => {
                   setInput(e.target.value);
@@ -326,16 +420,28 @@ export default function ChatWidget() {
                   // 「沒有偵測到聲音」會一直掛在輸入框上方，看起來像是打的字有問題。
                   if (voiceError) setVoiceError(null);
                 }}
+                onKeyDown={(e) => {
+                  // Enter 送出、Shift+Enter 換行：多數聊天 App 的慣例，長輩不用另外
+                  // 學新規則。isComposing 這個檢查是必要的——用注音/拼音打中文字時，
+                  // 按 Enter 常常是「確認候選字」而不是「打完這句話」，沒有這個檢查
+                  // 會變成選字選到一半就把問題送出去。
+                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                    e.preventDefault();
+                    send(input);
+                  }
+                }}
                 placeholder="輸入你的問題，或按🎤說話…"
                 maxLength={500}
-                className="min-w-0 flex-1 rounded-md border border-(--gridline) bg-(--surface-2) px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-(--accent)"
+                rows={1}
+                style={{ maxHeight: `${CHAT_TEXTAREA_MAX_HEIGHT_PX}px` }}
+                className="min-w-0 flex-1 resize-none overflow-y-auto rounded-md border border-(--gridline) bg-(--surface-2) px-3 py-2 text-sm leading-snug focus:outline-none focus:ring-2 focus:ring-(--accent)"
               />
               <button
                 type="button"
                 onClick={toggleVoiceInput}
                 aria-label={listening ? "停止語音輸入" : "開始語音輸入"}
                 title={listening ? "停止語音輸入" : "語音輸入（用講的問問題）"}
-                className={`rounded-md px-3 py-2 text-sm font-medium ${
+                className={`shrink-0 rounded-md px-3 py-2 text-sm font-medium ${
                   listening
                     ? "animate-pulse bg-(--price-up) text-white"
                     : "border border-(--gridline) bg-(--surface-2) text-(--text-primary) hover:bg-(--page-plane)"
@@ -346,11 +452,12 @@ export default function ChatWidget() {
               <button
                 type="submit"
                 disabled={loading}
-                className="rounded-md bg-(--accent) px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+                className="shrink-0 rounded-md bg-(--accent) px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
               >
                 送出
               </button>
             </form>
+            <p className="mt-1 text-[11px] text-(--text-muted)">按 Enter 傳送，Shift+Enter 換行</p>
           </div>
         </div>
       )}

@@ -246,6 +246,72 @@ Google 登入（選用）、全站密碼保護（`SITE_PASSWORD`）、全站 SEO
 
 ## 工作日誌（新到舊，只列有意義的變更；commit hash 對應 `git log`）
 
+### 2026-09-16：語音輸入改成「手動停止才結束」＋輸入框改成可換行的多行 textarea（`ChatWidget.tsx`）
+
+使用者今晚交代兩個新需求：(1)「AI問答的語音要改成開始錄音時，要直到再點擊一次停止按鈕，
+才停止錄音，不要自己斷掉錄音」；(2)「AI問答輸入框的文字太多時沒辦法顯示，要能夠換行並顯示
+更多的文字完整內容」。都只改 `src/components/ChatWidget.tsx`。
+
+**1. 語音輸入改成手動停止**：
+- `recognition.continuous` 從 `false` 改成 `true`，讓瀏覽器偵測到講話停頓後不會自動結束辨識。
+- 新增防呆：即使 `continuous=true`，部分瀏覽器實作長時間靜音後還是會自己觸發 `onend`（不是
+  使用者按停止鍵造成的）。用一個 `stoppedByUserRef` 旗標區分「使用者主動停止」跟「瀏覽器自己
+  結束」——只有後者才會在 `onend` 裡自動呼叫 `recognition.start()` 重新啟動、接續聆聽，畫面上
+  `listening` 狀態全程維持 `true`，使用者感覺不到中斷過。為避免麥克風真的故障時無限重啟，設了
+  `MAX_VOICE_RESTART_ATTEMPTS = 3`，連續重啟達上限就放棄並提示「語音輸入不斷中斷，請再按一次
+  🎤重新開始」；只要期間有成功聽到內容（`onresult` 觸發）就會把重啟計數器歸零。
+- `no-speech` 錯誤（长輩講話中間停頓太久、暫時沒聲音）現在不會顯示紅字、也不會真的把
+  `listening` 設成 `false`，只有使用者已經按過停止鍵之後才會照常處理。
+- `continuous=true` 之後 `onresult` 的 `event.results` 語意會變成「這次 `start()` 以來累積至今
+  的完整結果」，不是只有新增那一小段——如果照舊用「接在上一次 `setInput` 結果後面」的方式疊加
+  會把同一段話重複疊加好幾次。改成每次 `onresult` 都用 `event.results` 整段重建這次辨識工作
+  階段目前為止的內容（`lastFinalTranscriptRef`），再接在「開始講話當下」輸入框已有的文字
+  （`voiceBaseTextRef`，含跨自動重啟累積的部分）後面，整段覆蓋 `setInput`，確保重啟前後的內容
+  正確銜接、不重複、也不會蓋掉使用者原本打好或「問AI關於」預填的文字。
+- 沿用上一輪（`e768ef3`）修好的「面板關閉/元件卸載要收掉辨識」邏輯（`teardownRecognition`），
+  並額外讓它一律把 `stoppedByUserRef` 設回 `true`，確保這個新的自動重啟邏輯不會跟舊的收尾邏輯
+  互相打架（例如面板關閉後背景麥克風還嘗試自動重啟）。
+
+**2. 輸入框改成多行 textarea**：
+- `<input>` 換成 `<textarea rows={1}>`，用一個 `useEffect`（依賴 `input` state）在每次內容改變
+  時把 `el.style.height` 設成 `auto` 再設成 `min(scrollHeight, 112px)`，讓框隨文字自動增高、
+  上限約 5 行高度就內部捲動（`overflow-y-auto`），不會把整個聊天面板（本身有
+  `max-h-[calc(100vh-6rem)]` 尺寸限制，見更早的工作日誌）撐爆版面。用 `useEffect` 而不是只在
+  `onChange` 裡調整，是為了涵蓋所有會改變 `input` 的路徑——語音辨識填入文字、「問AI關於」預填
+  問句、送出後清空——這些都是直接呼叫 `setInput()`，不會經過 textarea 自己的 `onChange`。
+- 按鍵行為改成聊天 App 常見慣例：Enter 送出、Shift+Enter 換行，並在 `onKeyDown` 裡額外檢查
+  `e.nativeEvent.isComposing`——這是必要的，用注音/拼音輸入法打中文字時，按 Enter 常常只是
+  「確認候選字」，沒有這個檢查會變成選字選到一半就把問題整句送出去。
+- 表單容器改成 `flex items-end`，讓麥克風／送出按鈕在 textarea 隨文字增高時貼齊底部，並在
+  下方加一行小字提示「按 Enter 傳送，Shift+Enter 換行」。
+
+**驗證方式**：`npm run build` 通過（TypeScript 無錯誤）。因為自動化環境沒有真麥克風，用
+`page.addInitScript` 在本機起的 `npm run start` 服務注入一個可控的假 `SpeechRecognition`
+類別（記錄每次 `start`/`stop` 呼叫，並提供 `__fireResult`/`__fireNoSpeechError`/`__fireEnd`
+測試輔助方法模擬各種情境）搭配 Playwright 驗證，桌機 1440×900 與手機 390px 各跑一輪，全數
+通過：
+- 開始聆聽後模擬「停頓幾秒後才有下一段結果」（`no-speech` 錯誤）→ 畫面仍顯示「🎤 聆聽中」，
+  沒有跳錯誤訊息、沒有真的停止。
+- 模擬瀏覽器自己觸發 `onend`（不是使用者按停止）→ 自動呼叫 `start()` 重啟（SR log 顯示
+  `start count:1` 接著 `count:2`），畫面上 `listening` 全程沒有中斷過，重啟後再講一段話，
+  輸入框正確顯示「（第一段）+（第二段）」兩段接在一起、沒有重複也沒有遺漏。
+- 手動點擊停止按鈕（模擬使用者按 ⏹）→ 正確呼叫 `stop()`、`listening` 確實變成 `false`，
+  之後不會再有任何自動重啟的 `start()` 呼叫。
+- 輸入框貼入 180 字長文字 → 完整保留（長度比對 180=180，沒有被裁切），textarea 換行顯示、
+  高度封頂在 112px 內捲動，聊天面板本身維持原本 448px 高度沒有被撐爆（截圖確認）。
+- Shift+Enter 換行後文字裡確實含有 `\n`；接著按純 Enter 會送出並清空輸入框；模擬 IME
+  組字中按 Enter（`isComposing: true`）不會送出，文字留在框裡讓使用者繼續選字。
+- 手機 390px 寬度：長文字一樣正確換行顯示、面板與輸入框沒有造成橫向捲動（`scrollWidth` ≤
+  `innerWidth`）。
+
+**已知限制**：跟上一輪語音輸入功能相同，Web Speech API 在 Firefox 桌面版/Safari/iOS 支援度
+不穩定；Playwright 環境沒有真麥克風，這次驗證的是「假 SpeechRecognition 觸發各種事件時，元件
+邏輯有沒有正確反應」，不是「瀏覽器實際語音辨識引擎在真實長時間停頓後會不會自動 onend」這件事
+本身的機率/秒數（那是各家瀏覽器內部實作細節，元件這邊已經做了防禦性的自動重啟＋重啟上限，
+真正在真實裝置上長輩使用時如果還是覺得偶爾斷過一下，需要之後再依實際回報調整）。這次沒有
+連續失敗 2 次卡關的情況，未觸發 CLAUDE.md 規則一。下一個接手的裝置記得先派 Opus 規則三對這
+兩項改動做一次獨立複查，確認修好後才能正式回報「更新完成」。
+
 ### 2026-09-15（深夜，續）：Opus 規則三對「語音輸入」的獨立複查——抓到並修好 1 個真 bug（麥克風關不掉）＋3 個體驗缺陷（`e768ef3`）
 
 承接上一則（`511129c`）新增的語音輸入按鈕，依 CLAUDE.md 規則三派 Opus agent 做獨立複查。
@@ -2812,6 +2878,14 @@ Google 登入」、聊天輸入框是 `<input>` 不是 `<textarea>`、產業篩�
 
 ## 目前已知問題
 
+- **【2026-09-16 新增，已自行驗證，還沒派 Opus 規則三複查】語音輸入改成手動停止＋輸入框改成
+  多行 textarea**：詳見上方 2026-09-16 那則工作日誌。`npm run build` 通過，用假
+  `SpeechRecognition` + Playwright 驗證過「停頓不自動結束」「瀏覽器自己 onend 會自動重啟」
+  「手動按停止才真的停止」「長文字 180 字完整換行顯示、面板不被撐爆」「Enter 送出／
+  Shift+Enter 換行／IME 組字中 Enter 不誤送出」，桌機 1440×900 與手機 390px 都測過。**已知
+  限制**：沒有真麥克風可測「真實瀏覽器語音引擎在多久靜音後才會自己 onend」這個實際秒數/機率，
+  只驗證了元件邏輯在各種事件發生時反應是否正確。下一個接手的裝置記得先派 Opus 規則三對這兩項
+  改動做一次獨立複查，確認修好後才能正式回報「更新完成」。
 - **【2026-09-15 深夜新增，已自行驗證，還沒派 Opus 規則三複查】AI問答語音輸入按鈕**：
   `ChatWidget.tsx` 新增的麥克風按鈕本身（顯示位置/大小/不支援時的提示/權限被拒的提示/
   辨識結果自動填入輸入框不自動送出）都已用 Playwright 抽換假的 `SpeechRecognition`
