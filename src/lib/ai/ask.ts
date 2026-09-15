@@ -287,6 +287,15 @@ async function buildHoldingsGrounding(holdings: HoldingInput[]): Promise<string>
 const HOLDINGS_ANALYSIS_INTENT_PATTERN =
   /分析.{0,4}(我|一下)?.{0,4}(關注|持股|清單)|(關注|持股)清單.{0,6}分析|看看.{0,4}(我|我的)?.{0,4}(關注|持股)|我的?(關注|持股).{0,6}(如何|怎麼樣|狀況|表現)/;
 
+// Matches the exact phrasing ChatWidget.tsx's "問AI關於<股票>" button
+// pre-fills ("關於 台積電（2330），最近走勢如何？") plus close variants a
+// user might type themselves after opening that same context. See
+// wantsSingleStockAnalysis's own comment for why this is gated on
+// contextSymbol rather than firing for any question that happens to
+// mention "走勢".
+const SINGLE_STOCK_ANALYSIS_INTENT_PATTERN =
+  /最近走勢|該不該(買|賣|進場|出場)|值得(買|進場)|現在.{0,4}(能不能|可以|該).{0,4}(買|賣|進場)|(買|賣)點|現在.{0,6}(如何|怎麼樣|狀況)/;
+
 // A full buildStockGrounding() per holding is several sub-fetches each
 // (quote/chart/earnings/fundamentals/chips/announcements/news) — bounded
 // concurrency keeps a watchlist with many entries from firing a burst of
@@ -527,6 +536,14 @@ export async function answerQuestion(
   const themeMatch = targets.length === 0 ? detectTheme(question) : undefined;
   const wantsMovers = targets.length === 0 && !themeMatch && MOVERS_INTENT_PATTERN.test(question);
   const wantsHoldingsAnalysis = holdings.length > 0 && HOLDINGS_ANALYSIS_INTENT_PATTERN.test(question);
+  // The "問AI關於<股票>" button on every stock page pre-fills exactly this
+  // phrasing (see ChatWidget.tsx's ASK_ABOUT_EVENT handler) — a user asked
+  // for this button's answer to be as precise/thorough as the watchlist
+  // deep-analysis feature, for every stock, not just ones being held.
+  // Gated on contextSymbol (this button is the only thing that sets it) so
+  // a narrower follow-up question in the same conversation — "殖利率多少"
+  // — doesn't get inflated into a full write-up it didn't ask for.
+  const wantsSingleStockAnalysis = !!contextSymbol && SINGLE_STOCK_ANALYSIS_INTENT_PATTERN.test(question);
 
   let groundedSymbol: string | undefined;
 
@@ -708,6 +725,11 @@ export async function answerQuestion(
           "「僅關注（未持有）」每一檔都要包含：①綜合技術面、基本面、籌碼面、近期消息的分析；②明確的未來走勢看法；③具體建議動作，只能從「買進」「暫緩觀望」擇一明講，兩種都要給價位：「買進」要給建議進場價位或區間（可以是現價附近，也可以是『拉回到X元再進場』），「暫緩觀望」要給觸發買進的具體條件與價位（例如『站上X元且法人轉buy才考慮進場』『等拉回到支撐X元附近再說』），不能只說『觀望』兩個字不給任何條件；④簡短講清楚判斷依據。" +
           "每一檔都要有自己的粗體小標題（股票名稱+代號），檔數多的話這會是一則長回覆，這是使用者主動要求的深度分析、不是要壓縮成條列，不用擔心變長；但同一檔內部還是要精簡有重點，不要為了長而灌水重複的話。查不到完整資料的那幾檔就老實說暫時無法分析，不要用其他資料源的知識瞎猜硬寫一段。"
       : "拿到「我的關注清單/持股」時（通常是使用者問『幫我看看我關注的股票』這類輕量問法，不是按下『分析我的關注清單』按鈕），逐檔講重點：現價/今日漲跌、有損益資料的講清楚賺賠多少錢跟百分比、你對這檔現況的看法；沒設定成本的那幾檔就只講現況看法，不用特別提醒『你沒填成本』這種瑣事。多檔的話用條列，每檔一行講完，不要每檔都展開成一大段。",
+    wantsSingleStockAnalysis
+      ? // 使用者要求：個股頁面的『問AI關於』按鈕（每一檔股票都有）也要跟
+        // 分析關注清單一樣精準明確，不能只是簡短帶過。
+        "使用者這次是從個股頁面按了『問AI關於』（或問了『最近走勢如何/該不該買』這類問題），這代表使用者要的是針對這一檔股票的完整深度分析，不是效率優先的簡短回覆，這條規則的要求優先於前面『簡短、能一兩句話講完就不要拉長』的通則。回答一定要包含以下幾點，直接寫成一段完整、有邏輯的分析文字（不用像持股清單那樣分組，也不用條列）：①綜合技術面、基本面、財報、籌碼面、近期消息面，講清楚現在的情勢、各面向彼此是否互相印證或矛盾；②明確的未來走勢看法（偏多/偏空/盤整，大概理由）；③具體建議動作——除非資料裡明確顯示使用者已經持有這檔股票（例如「我的關注清單/持股」裡有這檔且填了成本股數），才能用「續抱/加碼/減碼/停損」，否則一律從「買進」「暫緩觀望」擇一明講，兩種都要給具體價位或價位區間（例如「拉回到X-Y元之間可以考慮買進」「等站上X元且法人轉買超再進場」「暫緩觀望，跌破X元附近要留意風險」），價位要根據資料裡實際的技術訊號（均線、近期高低點、布林通道上下軌）或基本面數字（本益比合理區間）推算，不要憑空給整數關卡；④簡短講清楚判斷依據是什麼。不用擔心答案變長，這是使用者主動要求的深度分析，但還是要精簡有重點、不要為了長而灌水重複的話。"
+      : "",
     "RSI超買（≥70）代表短線漲多、可能過熱，是提醒追高風險的訊號，不是『動能強勁、還可以買』的理由；RSI超賣（≤30）代表短線跌深，可能有反彈機會，但也可能繼續破底，同樣不是自動的買進理由。這兩種狀態都要講成『提醒、要注意』的語氣，不要因為使用者換個問法（例如問『還有其他機會嗎』）就把同一個超買訊號改講成正面理由，同一檔股票同樣的數據，解讀要前後一致。",
     "分析漲跌原因或做連結時，不要每次都只套用『升息/降息』這個單一角度，要視資料實際情況考慮更多常見的直接、間接影響關係，例如：美債殖利率上升通常對成長股/科技股估值不利（未來獲利折現價值變低）；美元強弱會牽動原物料價格與出口型企業的匯兌損益；新台幣兌美元匯率會影響台灣出口導向電子/半導體公司的獲利；油價上漲通常不利航空/塑化成本、但可能對能源類股有利；半導體庫存週期會讓上中下游（設備商、晶圓代工、封測、終端品牌）彼此連動；地緣政治風險升高時，資金常流向黃金、日圓這類避險資產；CPI（消費者物價指數）或非農就業數據公布，本身就常常是市場短期波動的直接觸發點，因為會立刻改變市場對升息/降息的預期；重要權值股或產業龍頭（例如台積電、輝達）公布財報或釋出財測展望，常會直接牽動整個供應鏈/同族群類股的股價，不是只影響那一檔自己。這些只是輔助判斷的角度，只有在資料能支撐、真的合理連結時才用，不要每次回答都硬套一輪，也不要講出資料裡沒有根據的因果關係。",
     "如果真的要談升息/降息這個角度，不要只講『升息通常對股市不利』這種一句話結論，可以視情況講得更細緻：升息剛宣布或初期（1-3個月）市場通常劇烈震盪、重新定價，這段時間股市走弱是正常現象，不代表趨勢已經轉空；如果已經進入升息中後期、經濟基本面依然穩健，市場通常會逐漸適應並回穩；如果市場開始預期升息即將結束或轉向降息，反而常常提前出現反彈。產業影響也不對稱：科技/成長股/高負債產業受升息衝擊通常最大（未來獲利折現價值下降、融資成本墊高），金融股（存放款利差擴大受惠）、電信/食品/公用事業這類高股息防禦股相對抗跌。最終市場會不會真的轉空，關鍵在於經濟走向「軟著陸」（通膨降溫但經濟沒垮，長線仍隨企業獲利表現）還是「硬著陸」（陷入衰退、企業獲利真的下滑）——這幾層判斷都只在資料能支撐、有實際根據時才講，不要每次都照本宣科講一遍完整框架，講出來的部分要跟眼前的資料對得上。",
@@ -719,7 +741,7 @@ export async function answerQuestion(
     "使用者一次問到兩檔以上股票做比較（例如『A跟B比較』『這幾檔誰比較好』）時，如果「個股資料」有列出多個區塊（會分別標示每一檔），要針對每一檔各自的實際數字逐項比較（現價/漲跌、本益比、營收/EPS成長、法人買賣超、技術面），講出你覺得哪一檔目前比較好、為什麼，不要只把每檔資料複述一遍卻不下結論；如果其中某幾檔查不到資料，就照實只講查得到的那幾檔並誠實說明另一檔查不到，不要用自己的知識幫查不到的那檔瞎猜數字或做比較。",
     "使用者問『XX概念股/XX類股/XX相關股有哪些』這類主題式問題時（例如『AI概念股』『半導體股』『航運股』），直接引用「主題股清單」區塊裡的真實股票與數據來回答，可以綜合漲跌幅與法人籌碼講出你覺得目前比較值得留意的幾檔，但只能從清單裡的股票挑、不要無中生有列出清單以外的公司；清單如果註明是『本站整理的常見相關個股、非完整或官方分類清單』，回答時就照實反映這一點（例如『以下是幾檔常見的相關個股，不是完整清單』），不要講得像官方權威分類。",
     "提到任何一檔個股時，一律同時寫出它在資料裡的完整名稱與股票代號（例如『台灣精材(3467)』，不可以只寫『精材』），而且名稱要原封不動照抄資料裡的寫法、不要自己簡稱或省略字——台股有很多名稱只差一兩個字的不同公司（例如台灣精材3467 與 精材3374 是兩家不同公司、當天漲跌方向可能完全相反），省略代號或簡稱會讓使用者看成另一檔股票。",
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 
   const userContent = grounding
     ? `參考資料：\n${grounding}\n\n使用者問題：${question}`
@@ -741,7 +763,13 @@ export async function answerQuestion(
         timeoutMs: 45000,
         maxOutputTokens: Math.min(2000 + holdings.length * 400, 8000),
       })
-    : await callAiProviders(system, messages);
+    : wantsSingleStockAnalysis
+      ? // Same "user knowingly asked for the full picture, not a quick
+        // reply" tradeoff as the holdings case above, just for one stock —
+        // the default budget was sized for a short chat answer and cut this
+        // kind of multi-paragraph analysis off mid-sentence.
+        await callAiProviders(system, messages, { timeoutMs: 30000, maxOutputTokens: 2500 })
+      : await callAiProviders(system, messages);
   if (result.usedAi) {
     return { answer: sanitizeLeakedMarkers(result.answer), groundedSymbol, usedAi: true };
   }
