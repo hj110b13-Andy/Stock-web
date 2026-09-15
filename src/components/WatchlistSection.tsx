@@ -4,6 +4,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import WatchlistTable, { type HoldingItem } from "@/components/WatchlistTable";
 import MarketTabs from "@/components/MarketTabs";
 import type { Quote, SearchItem } from "@/lib/data";
+import { breakEvenPrice, computeHoldingPnl, investedAmount } from "@/lib/portfolio";
 import { hasHolding, WATCHLIST_CHANGED_EVENT, getWatchlist, type WatchlistItem } from "@/lib/watchlist";
 
 function subscribe(callback: () => void) {
@@ -22,16 +23,52 @@ const POLL_MS = 20_000;
 
 const EMPTY: WatchlistItem[] = [];
 
-function exportCsv(items: SearchItem[]) {
-  const header = ["市場", "代碼", "名稱", "股價", "漲跌幅(%)", "成交量"];
-  const rows = items.map((i) => [
-    i.market === "TW" ? "台股" : "美股",
-    i.symbol,
-    i.name,
-    i.price,
-    i.changePercent,
-    i.volume,
-  ]);
+/** CSV 欄位刻意跟畫面上的 WatchlistTable 完全對應（含 2026-09-15 那次改版
+ *  新增的持有股數/購買價格/損益平衡價/投資金額/損益）——原本只匯出
+ *  股價/漲跌幅/成交量，使用者匯出自己的關注清單時，最想留存的持股與損益
+ *  資料反而整批遺失。數字一律走 lib/portfolio.ts 的同一組函式，確保
+ *  CSV 裡的金額跟畫面上看到的逐格相同，不會出現兩套算法。
+ *  僅關注（沒填持股）的那幾檔，這些欄位留空字串而不是 0——空白代表
+ *  「沒有這筆資料」，填 0 會被試算表當成真的持有 0 股、成本 0 元。 */
+function exportCsv(items: HoldingItem[]) {
+  const header = [
+    "市場",
+    "代碼",
+    "名稱",
+    "股價",
+    "漲跌幅(%)",
+    "成交量",
+    "狀態",
+    "持有股數",
+    "購買價格",
+    "損益平衡價",
+    "投資金額",
+    "損益",
+    "損益(%)",
+  ];
+  const rows = items.map((i) => {
+    const held = hasHolding(i);
+    const breakEven = held ? breakEvenPrice(i.costBasis!, i.shares!, i.market) : null;
+    const invested = held ? investedAmount(i.costBasis!, i.shares!, i.market) : null;
+    const { pnl, pnlPercent } = held
+      ? computeHoldingPnl(i.price, i.costBasis!, i.shares!, i.market)
+      : { pnl: null, pnlPercent: null };
+    return [
+      i.market === "TW" ? "台股" : "美股",
+      i.symbol,
+      i.name,
+      i.price,
+      i.changePercent,
+      i.volume,
+      held ? "持有中" : "僅關注",
+      held ? i.shares! : "",
+      held ? i.costBasis! : "",
+      breakEven ?? "",
+      invested ?? "",
+      pnl ?? "",
+      pnlPercent ?? "",
+    ];
+  });
   const csv = [header, ...rows]
     .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
     .join("\r\n");
