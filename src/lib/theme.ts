@@ -49,5 +49,10 @@ export function readChartPalette() {
     priceUpSoft: translucent(priceUp),
     priceDownSoft: translucent(priceDown),
     textMuted: read("--text-muted", "#898781"),
+    // Added for the "today" intraday price line (StockChart.tsx): a single
+    // price line can't meaningfully be colored red/green by direction the
+    // way a candle can (the price moves both ways within the same day), so
+    // it uses the neutral site accent instead of implying a direction.
+    accent: read("--accent", "#2a78d6"),
   };
 }

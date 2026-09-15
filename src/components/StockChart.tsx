@@ -122,7 +122,14 @@ export default function StockChart({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
+  // Two separate refs (rather than one unioned "either kind" ref) because
+  // only one is ever actually created per chart instance — see isIntraday
+  // below: "today" gets a plain price line (what a user actually asked
+  // for — a single day's open/high/low/close per *minute* reads as noise,
+  // not signal, compared to a continuous line of where the price has been),
+  // every other range keeps the existing candlestick.
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const lineSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const maSeriesRef = useRef<Partial<Record<"ma5" | "ma10" | "ma20" | "ma60", ISeriesApi<"Line">>>>({});
   const bollingerSeriesRef = useRef<{ upper?: ISeriesApi<"Line">; middle?: ISeriesApi<"Line">; lower?: ISeriesApi<"Line"> }>({});
@@ -244,14 +251,30 @@ export default function StockChart({
       autoSize: true,
     });
 
-    const series = chart.addSeries(CandlestickSeries, {
-      upColor: palette.priceUp,
-      downColor: palette.priceDown,
-      borderUpColor: palette.priceUp,
-      borderDownColor: palette.priceDown,
-      wickUpColor: palette.priceUp,
-      wickDownColor: palette.priceDown,
-    });
+    // "today" gets a plain price line instead of a candlestick — see the
+    // ref declarations' comment for why. Uses the neutral site accent
+    // rather than a red/green up/down color: a single line can't honestly
+    // represent "up or down" for a whole day when the price moves both
+    // ways within it, unlike a daily candle which really is one clean
+    // up-or-down move.
+    const series = isIntraday
+      ? undefined
+      : chart.addSeries(CandlestickSeries, {
+          upColor: palette.priceUp,
+          downColor: palette.priceDown,
+          borderUpColor: palette.priceUp,
+          borderDownColor: palette.priceDown,
+          wickUpColor: palette.priceUp,
+          wickDownColor: palette.priceDown,
+        });
+    const lineSeries = isIntraday
+      ? chart.addSeries(LineSeries, {
+          color: palette.accent,
+          lineWidth: 2,
+          priceLineVisible: false,
+          lastValueVisible: true,
+        })
+      : undefined;
 
     const volume = chart.addSeries(HistogramSeries, {
       // lightweight-charts' built-in "volume" formatter always abbreviates
@@ -265,10 +288,11 @@ export default function StockChart({
       color: palette.textMuted,
     });
     chart.priceScale("volume").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
-    series.priceScale().applyOptions({ scaleMargins: { top: 0.06, bottom: 0.22 } });
+    (series ?? lineSeries)!.priceScale().applyOptions({ scaleMargins: { top: 0.06, bottom: 0.22 } });
 
     chartRef.current = chart;
-    seriesRef.current = series;
+    seriesRef.current = series ?? null;
+    lineSeriesRef.current = lineSeries ?? null;
     volumeRef.current = volume;
     maSeriesRef.current = {};
     bollingerSeriesRef.current = {};
@@ -361,18 +385,42 @@ export default function StockChart({
       // over a dark chart, or format a US price with TW 張/TWD rules.
       const { priceUp, priceDown, textMuted } = paletteRef.current;
       const { currency, market } = formatRef.current;
-      const up = candle.close >= candle.open;
-      const dirColor = up ? priceUp : priceDown;
-      tooltip.innerHTML = `
-        <div style="font-weight:600;margin-bottom:4px">${candle.time}</div>
-        <div style="display:grid;grid-template-columns:auto auto;column-gap:10px;row-gap:2px;font-variant-numeric:tabular-nums">
-          <span style="color:${textMuted}">開</span><span>${formatPrice(candle.open, currency)}</span>
-          <span style="color:${textMuted}">高</span><span style="color:${priceUp}">${formatPrice(candle.high, currency)}</span>
-          <span style="color:${textMuted}">低</span><span style="color:${priceDown}">${formatPrice(candle.low, currency)}</span>
-          <span style="color:${textMuted}">收</span><span style="color:${dirColor};font-weight:600">${formatPrice(candle.close, currency)}</span>
-          <span style="color:${textMuted}">量</span><span>${formatVolume(candle.volume, market)}</span>
-        </div>
-      `;
+
+      if (isIntraday) {
+        // A 1-minute bar's own open/high/low barely differ from its close
+        // (a minute of trading, not a whole day) — showing all four the way
+        // the daily view does mostly just repeats the same number four
+        // times. Just the traded price and that minute's volume, the two
+        // things actually worth reading off an intraday chart at a glance.
+        // candle.time was deliberately shifted to exchange-local wall-clock
+        // time before it ever reached the chart (see
+        // fetchYahooIntradayCandles) — read it back with UTC accessors, not
+        // the browser's own local-timezone ones, or this would shift it a
+        // second time.
+        const d = new Date(candle.time);
+        const hh = String(d.getUTCHours()).padStart(2, "0");
+        const mm = String(d.getUTCMinutes()).padStart(2, "0");
+        tooltip.innerHTML = `
+          <div style="font-weight:600;margin-bottom:4px">${hh}:${mm}</div>
+          <div style="display:grid;grid-template-columns:auto auto;column-gap:10px;row-gap:2px;font-variant-numeric:tabular-nums">
+            <span style="color:${textMuted}">價</span><span style="font-weight:600">${formatPrice(candle.close, currency)}</span>
+            <span style="color:${textMuted}">量</span><span>${formatVolume(candle.volume, market)}</span>
+          </div>
+        `;
+      } else {
+        const up = candle.close >= candle.open;
+        const dirColor = up ? priceUp : priceDown;
+        tooltip.innerHTML = `
+          <div style="font-weight:600;margin-bottom:4px">${candle.time}</div>
+          <div style="display:grid;grid-template-columns:auto auto;column-gap:10px;row-gap:2px;font-variant-numeric:tabular-nums">
+            <span style="color:${textMuted}">開</span><span>${formatPrice(candle.open, currency)}</span>
+            <span style="color:${textMuted}">高</span><span style="color:${priceUp}">${formatPrice(candle.high, currency)}</span>
+            <span style="color:${textMuted}">低</span><span style="color:${priceDown}">${formatPrice(candle.low, currency)}</span>
+            <span style="color:${textMuted}">收</span><span style="color:${dirColor};font-weight:600">${formatPrice(candle.close, currency)}</span>
+            <span style="color:${textMuted}">量</span><span>${formatVolume(candle.volume, market)}</span>
+          </div>
+        `;
+      }
       tooltip.style.opacity = "1";
 
       const pad = 14;
@@ -392,6 +440,7 @@ export default function StockChart({
       chart.remove();
       chartRef.current = null;
       seriesRef.current = null;
+      lineSeriesRef.current = null;
       volumeRef.current = null;
     };
     // Recreated on indicator-settings change (activeSubPanes derives from
@@ -416,8 +465,9 @@ export default function StockChart({
   useEffect(() => {
     const chart = chartRef.current;
     const series = seriesRef.current;
+    const lineSeries = lineSeriesRef.current;
     const volume = volumeRef.current;
-    if (!chart || !series || !volume) return;
+    if (!chart || (!series && !lineSeries) || !volume) return;
     const palette = readChartPalette();
     paletteRef.current = palette;
     chart.applyOptions({
@@ -426,7 +476,7 @@ export default function StockChart({
       rightPriceScale: { borderColor: palette.gridline },
       timeScale: { borderColor: palette.gridline },
     });
-    series.applyOptions({
+    series?.applyOptions({
       upColor: palette.priceUp,
       downColor: palette.priceDown,
       borderUpColor: palette.priceUp,
@@ -434,6 +484,7 @@ export default function StockChart({
       wickUpColor: palette.priceUp,
       wickDownColor: palette.priceDown,
     });
+    lineSeries?.applyOptions({ color: palette.accent });
     volume.applyOptions({ color: palette.textMuted });
   }, [themeTick, chartVersion]);
 
@@ -475,9 +526,10 @@ export default function StockChart({
   }, [candles]);
 
   useEffect(() => {
-    if (!chartData || !seriesRef.current || !volumeRef.current || !chartRef.current) return;
+    if (!chartData || (!seriesRef.current && !lineSeriesRef.current) || !volumeRef.current || !chartRef.current) return;
     const { priceUpSoft, priceDownSoft } = paletteRef.current;
-    seriesRef.current.setData(chartData.candles);
+    seriesRef.current?.setData(chartData.candles);
+    lineSeriesRef.current?.setData(chartData.candles.map((c) => ({ time: c.time, value: c.close })));
     volumeRef.current.setData(
       chartData.volume.map((v) => ({
         time: v.time,

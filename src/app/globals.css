@@ -138,12 +138,16 @@ html {
      the point, but it grew the floating chat widget's own box (also
      rem-sized at the time) enough to clip off-screen on a modest browser
      window, and generally left noticeably less content visible per screen
-     before needing to scroll. Backed off to 106.25% (16px -> 17px): still
-     a real, visible increase over the original, just without those side
-     effects. The chat widget's own box is now pinned to a fixed px size
-     specifically so it no longer grows/shrinks with this value at all (see
-     ChatWidget.tsx). */
-  font-size: 106.25%;
+     before needing to scroll. Backed off to 106.25% (16px -> 17px) at the
+     time, with the chat widget's own box separately pinned to a fixed px
+     size (see ChatWidget.tsx) so it no longer grows/shrinks with this value
+     at all. With that fix in place the original blocker for 112.5% no
+     longer applies, and the user asked for another step up — bumped back
+     to 112.5% and re-checked homepage/individual-stock-page/search at both
+     a mobile (390px) and desktop width for clipping/overflow before keeping
+     it; the only remaining side effect is the expected one (a bit less
+     content per screen before scrolling), not breakage. */
+  font-size: 112.5%;
 }
 
 body {

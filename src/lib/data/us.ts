@@ -104,6 +104,12 @@ interface YahooChartResult {
     regularMarketOpen?: number;
     longName?: string;
     shortName?: string;
+    /** Exchange's UTC offset in seconds AT THIS MOMENT (Yahoo computes this
+     *  itself, correctly accounting for US markets' DST — e.g. 28800 for
+     *  Taiwan/UTC+8 year-round, -14400 or -18000 for US Eastern depending on
+     *  the time of year). Used only by fetchYahooIntradayCandles below to
+     *  shift intraday timestamps into exchange-local wall-clock time. */
+    gmtoffset?: number;
   };
   timestamp?: number[];
   indicators: {
@@ -419,6 +425,18 @@ export async function fetchYahooIntradayCandles(yahooSymbol: string): Promise<Ca
 
   const timestamps = result.timestamp ?? [];
   const quote = result.indicators.quote[0];
+  // lightweight-charts always renders a numeric Time as UTC — there's no
+  // per-chart timezone setting. Left as real UTC seconds, a TW chart's
+  // 09:00-13:30 local session would display as "01:00-05:30" (confirmed
+  // live, and confusing for exactly the audience this "today" range is
+  // for). The standard workaround: bake the exchange's own UTC offset into
+  // the timestamp before it ever reaches the chart, so displaying the
+  // (shifted) value "as UTC" actually shows correct exchange-local
+  // wall-clock time. Yahoo already reports this offset itself
+  // (`meta.gmtoffset`), correctly accounting for US markets' DST — no need
+  // to reimplement timezone math or hardcode a value that would be wrong
+  // for half the year.
+  const gmtoffset = result.meta.gmtoffset ?? 0;
   const candles: Candle[] = [];
   for (let i = 0; i < timestamps.length; i++) {
     const open = quote.open[i];
@@ -435,8 +453,9 @@ export async function fetchYahooIntradayCandles(yahooSymbol: string): Promise<Ca
       // actual time of day instead of colliding every bar from today onto
       // one business-day key. Round-trips exactly through
       // `new Date(seconds * 1000).toISOString()` there since these
-      // timestamps are already whole-second/whole-minute values.
-      time: new Date(timestamps[i] * 1000).toISOString(),
+      // timestamps (already shifted by gmtoffset above) are still
+      // whole-second/whole-minute values.
+      time: new Date((timestamps[i] + gmtoffset) * 1000).toISOString(),
       open: round2(open),
       high: round2(high),
       low: round2(low),
