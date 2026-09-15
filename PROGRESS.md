@@ -246,6 +246,28 @@ Google 登入（選用）、全站密碼保護（`SITE_PASSWORD`）、全站 SEO
 
 ## 工作日誌（新到舊，只列有意義的變更；commit hash 對應 `git log`）
 
+### 2026-09-15（晚間，再續）：價量關係篩選不用再乾等5個真實交易日——新增一次性回填功能
+
+使用者反映「現在也能查到前幾筆資料，為什麼還要等5天?我要現在就能用」——原本
+`volumeHistory.ts` 的均量歷史完全靠 warm-cache 每天收盤後 piggyback 記一筆，要等
+`MIN_HISTORY_DAYS_FOR_AVERAGE`（5）個真實交易日才會開始出現非中性分類，這段等待期
+對已經部署好一陣子的正式站來說沒有必要——因為每檔股票自己的個股頁本來就查得到
+好幾個月的歷史K線（含每日成交量）。
+
+新增 `backfillVolumeHistoryFromCandles()`（`volumeHistory.ts`）+ `backfillVolumeHistory()`
+（`index.ts`，用既有的 `getChart()` 逐檔抓「1m」範圍歷史K線，`mapWithConcurrency`
+限制 15 併發）+ 一次性觸發端點 `/api/cron/backfill-volume-history?market=TW|US&offset=
+&limit=`（用 offset/limit 分頁，避免單次呼叫涵蓋整個約1391檔的台股清單超出 60 秒執行
+時間限制）。回填時排除「今天」這個交易日的K線，避免跟既有的 `maybeRecordDailyVolumeSnapshot`
+piggyback 機制重複計算同一天。回填完成後 piggyback 機制會自然接續往後每天累積，兩者
+不衝突，這不是常態排程，只需要觸發一次（或未來 Redis 被清空重置時再手動觸發一次）。
+
+已實際部署後觸發：美股 171 檔一次涵蓋完成（170 檔成功回填），台股分 8 批
+（每批 200 檔）涵蓋全部 1391 檔，共回填 1063 檔（其餘已有足夠真實歷史或查無K線資料）。
+驗證：`/api/search?market=TW` 原本應該全部 `neutral`，回填後立刻出現 28 檔
+`buy-leaning`、7 檔 `sell-leaning`（例如 8038 長園科量比 3.3 倍且上漲、天鉞電量比
+10.8 倍且上漲），確認功能立即可用，不用再等。
+
 ### 2026-09-15（晚間，續）：漲跌停鎖住的股票會被誤判成 0% 漲跌幅（使用者以驊宏資 6148 為例回報）
 
 上一則修好上櫃報價的「昨天收盤」問題後，使用者馬上又回報「鼓號6148還是不對」（6148 是
