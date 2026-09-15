@@ -246,7 +246,7 @@ function DraggableGroup({
                   className="py-2 pr-4 font-medium text-right"
                   title={
                     market === "TW"
-                      ? "假設買賣手續費各0.1425%、賣出證券交易稅0.3%（一般網路券商常見費率，實際依個人開戶條件為準，且為理論連續值，未計入實際手續費會捨去到整數元的誤差）— 股價高於此價才是真正扣除成本後有賺"
+                      ? "假設買賣手續費各0.1425%、賣出證券交易稅0.3%（一般網路券商常見費率，實際依個人開戶條件為準），無條件進位到分— 股價達到此價才保證真正扣除成本後不虧"
                       : "美股各券商手續費結構差異大（不少已是免手續費），暫不試算，直接以購買價格顯示"
                   }
                 >
@@ -342,7 +342,7 @@ function HoldingRow({
   const { pnl, pnlPercent } = hasHoldingInput
     ? computeHoldingPnl(item.price, costNum, sharesNum, item.market)
     : { pnl: null, pnlPercent: null };
-  const breakEven = hasHoldingInput ? breakEvenPrice(costNum, item.market) : null;
+  const breakEven = hasHoldingInput ? breakEvenPrice(costNum, sharesNum, item.market) : null;
   const invested = hasHoldingInput ? investedAmount(costNum, sharesNum, item.market) : null;
 
   return (

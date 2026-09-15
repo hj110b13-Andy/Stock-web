@@ -63,29 +63,36 @@ export function investedAmount(costBasis: number, shares: number, market: Market
   return Math.round(principal) + twBuyCommission(costBasis, shares);
 }
 
-/** The sale price at which total proceeds exactly cover the original
- *  purchase cost plus both sides' transaction costs — i.e. genuinely
- *  breaking even after fees, not just "back to the purchase price" (which
- *  ignores that both buying and selling cost money). A $0 cost basis is a
- *  real (if unusual — gifted/free shares) case and correctly breaks even at
- *  $0 too; only a negative cost basis (never actually reachable through the
- *  UI, which floors input at 0, but not guaranteed for every caller) has no
- *  meaningful answer.
+/** The lowest sale price (to the cent) at which total proceeds are
+ *  guaranteed to cover the original purchase cost plus both sides'
+ *  transaction costs — i.e. genuinely breaking even after fees, not just
+ *  "back to the purchase price" (which ignores that both buying and selling
+ *  cost money). A $0 cost basis is a real (if unusual — gifted/free shares)
+ *  case and correctly breaks even at $0 too; only a negative cost basis
+ *  (never actually reachable through the UI, which floors input at 0, but
+ *  not guaranteed for every caller) or non-positive `shares` (division by
+ *  zero) has no meaningful answer.
  *
- *  This stays a continuous (non-integer-truncated) per-share figure even
- *  though investedAmount()/computeHoldingPnl() now truncate each fee
- *  component to a whole NT dollar to match real brokerage statements: a
- *  break-even PRICE is a theoretical reference point, not an actual booked
- *  transaction with its own fee line, so there's no real "truncate this
- *  fee" step to apply to it. Because of that, the actual (integer-truncated)
- *  P&L at exactly this price may land a dollar or two away from zero rather
- *  than exactly zero — that's expected, not a bug, and matches how brokerage
- *  apps also show a clean theoretical break-even price alongside
- *  whole-dollar-rounded booked P&L. */
-export function breakEvenPrice(costBasis: number, market: Market): number | null {
-  if (costBasis < 0) return null;
+ *  Deliberately built FROM investedAmount() (the already-verified, floored-
+ *  to-the-dollar actual money spent) divided by the continuous sell-side
+ *  factor, then rounded UP to the cent — not from the raw per-share cost
+ *  basis directly. Confirmed against a user's real 玉山證券 app across all 7
+ *  of their overlapping holdings (光罩/順德/陽明/宏碁資訊/恩德/信驊/全友,
+ *  share counts from 2 to 200): this exact formula reproduced 玉山's
+ *  displayed 損益平衡價 to the cent for every one of them, whereas a plain
+ *  continuous per-share formula (costBasis×(1+buyRate)/(1-sellRate-taxRate))
+ *  was consistently off by a cent or more. Rounding UP (not to nearest, not
+ *  down) is the principled choice, not just curve-fitting to match: a
+ *  break-even price quantized to the cent has to be the price at which you
+ *  do NOT lose money, and only rounding up guarantees that — rounding to
+ *  nearest or down can land a cent on the losing side of the true
+ *  (continuous) break-even point. */
+export function breakEvenPrice(costBasis: number, shares: number, market: Market): number | null {
+  if (costBasis < 0 || shares <= 0) return null;
   if (market !== "TW") return costBasis;
-  return (costBasis * (1 + TW_BUY_COMMISSION_RATE)) / (1 - TW_SELL_COMMISSION_RATE - TW_SELL_TAX_RATE);
+  const invested = investedAmount(costBasis, shares, market);
+  const sellFactor = 1 - TW_SELL_COMMISSION_RATE - TW_SELL_TAX_RATE;
+  return Math.ceil((invested / (shares * sellFactor)) * 100) / 100;
 }
 
 /**
@@ -93,13 +100,11 @@ export function breakEvenPrice(costBasis: number, market: Market): number | null
  * proceeds after the sell-side commission/tax (TW only, each truncated to a
  * whole NT dollar — see the comment above twBuyCommission()) minus the
  * actual money spent to buy it (investedAmount(), which already includes
- * the buy-side commission). Because both this function and breakEvenPrice()
- * account for the same two-sided fees, plugging price =
- * breakEvenPrice(costBasis, market) back in lands very close to pnl = 0 —
- * typically within a dollar or two, not exactly 0, since breakEvenPrice()
- * is a continuous theoretical figure while this function truncates each fee
- * to a whole dollar the way a real brokerage statement does (see
- * breakEvenPrice()'s comment for why that's expected, not a bug).
+ * the buy-side commission). Because breakEvenPrice() always rounds UP to
+ * the cent, plugging price = breakEvenPrice(costBasis, shares, market) back
+ * in here lands at a small non-negative pnl (typically $0-3, essentially
+ * the rounding margin) rather than exactly 0 — that's expected, not a bug
+ * (see breakEvenPrice()'s comment).
  * `pnlPercent` is null whenever there's nothing to divide by (a $0 cost
  * basis, or an invalid negative one) — the dollar `pnl` itself stays a real
  * number in the $0 case (netProceeds is still well-defined), it's only the
