@@ -304,6 +304,9 @@ interface MisRow {
   v: string; // 累積成交量，單位是「張」，需乘 1000 才是股數（跟 twse.ts 的 MIS 欄位語意一致）
   b?: string; // 揭示買價，最多 5 檔、以 "_" 分隔，第一檔是目前最佳買價
   a?: string; // 揭示賣價，最多 5 檔、以 "_" 分隔，第一檔是目前最佳賣價
+  // 最近一筆實際成交（時間+價格），漲跌停鎖住時最可靠的「目前價格」來源——
+  // 見下方 rowToOtcQuote 內的說明。
+  trade?: { z?: string };
 }
 
 function bestDepthPrice(depth: string | undefined): number | undefined {
@@ -320,11 +323,24 @@ function rowToOtcQuote(row: MisRow): Quote | null {
   // twse.ts's rowToQuote — MIS only updates `z` when a trade actually
   // prints, which for most OTC names (thinner volume than TWSE mainboard)
   // means long stretches with a stale/blank `z` even while the book moves.
+  //
+  // Confirmed live on 驊宏資/6148 while it was limit-up-locked (+10%): top
+  // `z` blanked to "-" AND the ask side read "-" (nobody selling at the
+  // lock) while the bid side's best entry was itself a "0.0000" sentinel
+  // that `bestDepthPrice` correctly rejects — so both `bid`/`ask` came back
+  // undefined too, and this fell all the way to `prevClose`, misreporting a
+  // stock genuinely locked +10% as flat 0%. `trade.z` (the last actually-
+  // executed trade) stays populated through exactly this gap.
   let last = parseFloat(row.z);
   if (!Number.isFinite(last) || row.z === "-" || row.z === "") {
-    const bid = bestDepthPrice(row.b);
-    const ask = bestDepthPrice(row.a);
-    last = bid != null && ask != null ? (bid + ask) / 2 : bid ?? ask ?? prevClose;
+    const tradeLast = row.trade?.z ? parseFloat(row.trade.z) : NaN;
+    if (Number.isFinite(tradeLast) && tradeLast > 0) {
+      last = tradeLast;
+    } else {
+      const bid = bestDepthPrice(row.b);
+      const ask = bestDepthPrice(row.a);
+      last = bid != null && ask != null ? (bid + ask) / 2 : bid ?? ask ?? prevClose;
+    }
   }
   const change = last - prevClose;
   const known = findInUniverse(row.c, "TW");

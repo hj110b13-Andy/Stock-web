@@ -21,6 +21,9 @@ interface MisRow {
   v: string; // 累積成交量，單位是「張」（1 張 = 1000 股），需乘 1000 才能跟 STOCK_DAY 的股數對齊
   b?: string; // 揭示買價，最多 5 檔、以 "_" 分隔，第一檔是目前最佳買價
   a?: string; // 揭示賣價，最多 5 檔、以 "_" 分隔，第一檔是目前最佳賣價
+  // 最近一筆實際成交（時間+價格），漲跌停鎖住時最可靠的「目前價格」來源——
+  // 見下方 rowToQuote 內的說明。
+  trade?: { z?: string };
 }
 
 /** First (best) price out of MIS's "_"-separated bid/ask depth string. */
@@ -43,11 +46,29 @@ function rowToQuote(row: MisRow): Quote | null {
   // (correctly live-updating) high/low range. The midpoint of the current
   // best bid/ask is a live, TWSE-sourced approximation of where the stock
   // actually is trading right now.
+  //
+  // Confirmed live: a stock locked at its 漲停/跌停 (limit up/down) price can
+  // hit BOTH fallbacks at once — top-level `z` blanks to "-" right in the
+  // gap between prints, AND the opposite side of the book is empty (e.g.
+  // limit-up: no one is willing to sell, so `a` reads "-") while the
+  // remaining side's best entry can itself be a "0.0000" sentinel that
+  // `bestDepthPrice` correctly rejects (`value > 0`) — so `bid`/`ask` are
+  // BOTH undefined too, and this used to fall all the way through to
+  // `prevClose`, misreporting a stock genuinely locked +10% as a flat 0%
+  // change (caught live on 驊宏資/6148 while it was limit-up-locked).
+  // `trade.z` — the last actually-executed trade — stays populated through
+  // exactly this gap, so it's tried before resorting to the bid/ask
+  // midpoint, which is only a live *approximation* anyway.
   let last = parseFloat(row.z);
   if (!Number.isFinite(last) || row.z === "-" || row.z === "") {
-    const bid = bestDepthPrice(row.b);
-    const ask = bestDepthPrice(row.a);
-    last = bid != null && ask != null ? (bid + ask) / 2 : bid ?? ask ?? prevClose;
+    const tradeLast = row.trade?.z ? parseFloat(row.trade.z) : NaN;
+    if (Number.isFinite(tradeLast) && tradeLast > 0) {
+      last = tradeLast;
+    } else {
+      const bid = bestDepthPrice(row.b);
+      const ask = bestDepthPrice(row.a);
+      last = bid != null && ask != null ? (bid + ask) / 2 : bid ?? ask ?? prevClose;
+    }
   }
   const change = last - prevClose;
   const known = findInUniverse(row.c, "TW");
