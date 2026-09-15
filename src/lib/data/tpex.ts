@@ -1,6 +1,6 @@
 import https from "node:https";
 import tls from "node:tls";
-import { cachedMap, mapWithConcurrency } from "./cache";
+import { chunk, fetchWithTimeout, mapWithConcurrency } from "./cache";
 import type { Candle, ChartRange, Chips, Earnings, Fundamentals, MaterialAnnouncement, Quote } from "./types";
 import { findInUniverse, type UniverseEntry } from "./universe";
 import { TW_INDUSTRY_NAMES } from "./twse";
@@ -267,83 +267,97 @@ function rocSlashToIso(roc: string): string {
 // Quotes
 // ---------------------------------------------------------------------------
 
-interface TpexQuoteRow {
-  Date: string;
-  SecuritiesCompanyCode: string;
-  CompanyName: string;
-  Close: string;
-  Change: string;
-  Open: string;
-  High: string;
-  Low: string;
-  TradingShares: string;
+/**
+ * ROOT CAUSE (found live, 2026-09-15, from a user report that a specific
+ * OTC stock's price/漲跌幅 "still looked like yesterday's" during today's
+ * open): `www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes` (used here
+ * previously) is an END-OF-DAY dataset — confirmed by its own `Date` field
+ * reading the *previous* trading day well into today's session — not a
+ * real-time feed. Every OTC/上櫃 stock (roughly half of the TW universe)
+ * was therefore showing yesterday's closing price/change all day, every
+ * day, until this endpoint refreshed sometime after today's close — a
+ * systemic staleness bug affecting close to a thousand stocks, not a
+ * one-off. TWSE-listed stocks never had this problem because twse.ts's
+ * quotes already come from `mis.twse.com.tw`'s genuinely real-time MIS
+ * endpoint.
+ *
+ * Fix: that same MIS endpoint also serves OTC quotes — just prefix the
+ * `ex_ch` code with `otc_` instead of `tse_` (confirmed live: `y`/`o`/`h`/
+ * `l` track the actual current session, and a `trade` sub-object carries a
+ * real intraday timestamp). This mirrors twse.ts's fetchTwseQuote /
+ * fetchTwseQuotesBatch almost exactly (same host, same row shape, same
+ * per-symbol batching via a pipe-separated `ex_ch` list) — deliberately
+ * duplicated here rather than imported, per this codebase's existing
+ * "each exchange owns its own copy of its small parsing helpers"
+ * convention (see the ROC-date helpers above). No TLS workaround is needed
+ * for this endpoint (unlike the rest of this file) since it's the same
+ * `mis.twse.com.tw` host twse.ts already calls successfully from Vercel.
+ */
+interface MisRow {
+  c: string; // code
+  n: string; // name
+  z: string; // current price, "-" if no trade yet today
+  y: string; // previous close
+  o: string; // open
+  h: string; // high
+  l: string; // low
+  v: string; // 累積成交量，單位是「張」，需乘 1000 才是股數（跟 twse.ts 的 MIS 欄位語意一致）
+  b?: string; // 揭示買價，最多 5 檔、以 "_" 分隔，第一檔是目前最佳買價
+  a?: string; // 揭示賣價，最多 5 檔、以 "_" 分隔，第一檔是目前最佳賣價
 }
 
-/**
- * Confirmed live: TradingShares here is already in raw shares (股), NOT
- * lots (張) — cross-checked against the per-symbol history endpoint's 成交
- * 張數 column for the same stock/day (e.g. 3293 on 115/09/11: history says
- * 1,922 張 = ~1,922,000 股, and this endpoint's TradingShares for the same
- * day is 1,922,407 — matching within odd-lot rounding). This is the
- * opposite of TWSE's MIS `v` field, which IS in 張 and needs ×1000 (see
- * twse.ts's rowToQuote) — copying that ×1000 step here would silently
- * inflate every TPEx stock's reported volume 1000x, so it's deliberately
- * NOT applied.
- */
-function rowToTpexQuote(row: TpexQuoteRow): Quote | null {
-  const close = parseTpexNumber(row.Close);
-  if (close == null || close <= 0) return null; // no real trade data for this code
-  const change = parseTpexNumber(row.Change) ?? 0;
-  const prevClose = close - change;
-  const known = findInUniverse(row.SecuritiesCompanyCode, "TW");
+function bestDepthPrice(depth: string | undefined): number | undefined {
+  if (!depth) return undefined;
+  const value = parseFloat(depth.split("_")[0]);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function rowToOtcQuote(row: MisRow): Quote | null {
+  const prevClose = parseFloat(row.y);
+  if (!Number.isFinite(prevClose)) return null; // no real data at all for this code
+
+  // Same "z is usually '-'; fall back to best bid/ask midpoint" reasoning as
+  // twse.ts's rowToQuote — MIS only updates `z` when a trade actually
+  // prints, which for most OTC names (thinner volume than TWSE mainboard)
+  // means long stretches with a stale/blank `z` even while the book moves.
+  let last = parseFloat(row.z);
+  if (!Number.isFinite(last) || row.z === "-" || row.z === "") {
+    const bid = bestDepthPrice(row.b);
+    const ask = bestDepthPrice(row.a);
+    last = bid != null && ask != null ? (bid + ask) / 2 : bid ?? ask ?? prevClose;
+  }
+  const change = last - prevClose;
+  const known = findInUniverse(row.c, "TW");
 
   return {
-    symbol: row.SecuritiesCompanyCode,
+    symbol: row.c,
     market: "TW",
-    name: row.CompanyName || known?.name || row.SecuritiesCompanyCode,
-    price: round2(close),
+    name: row.n || known?.name || row.c,
+    price: round2(last),
     change: round2(change),
     changePercent: prevClose ? round2((change / prevClose) * 100) : 0,
-    open: round2(parseTpexNumber(row.Open) ?? close),
-    high: round2(parseTpexNumber(row.High) ?? close),
-    low: round2(parseTpexNumber(row.Low) ?? close),
+    open: round2(parseFloat(row.o) || last),
+    high: round2(parseFloat(row.h) || last),
+    low: round2(parseFloat(row.l) || last),
     prevClose: round2(prevClose),
-    volume: parseInt((row.TradingShares || "0").replace(/,/g, ""), 10) || 0,
+    volume: (parseInt(row.v, 10) || 0) * 1000,
     currency: "TWD",
     updatedAt: new Date().toISOString(),
   };
 }
 
-// TPEx's whole-market quote snapshot endpoint does NOT support per-symbol
-// filtering — every call returns the entire OTC mainboard (~1000 rows,
-// several hundred KB) regardless of what's actually needed. Unlike TWSE's
-// MIS endpoint (a genuinely cheap single-symbol request), a TPEx "single
-// quote" is unavoidably a whole-market fetch — so the whole-market result
-// itself is cached here (short TTL, matching index.ts's QUOTE_TTL_MS) and
-// shared by every caller: an individual /api/quote/<TPEx symbol> page load
-// and a batch search/highlights fetch both hit the same cached snapshot
-// instead of each re-downloading the full OTC market independently. This is
-// the key perf-preserving design decision for TPEx quotes (see PROGRESS.md
-// for measured cold/warm numbers).
-const TPEX_QUOTE_SNAPSHOT_TTL_MS = 20_000;
-
-async function fetchTpexQuoteSnapshot(): Promise<Map<string, Quote>> {
-  return cachedMap("tpex-quote-snapshot-raw", TPEX_QUOTE_SNAPSHOT_TTL_MS, async () => {
-    const rows = await fetchTpexJson<TpexQuoteRow[]>(
-      "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes"
-    );
-    const map = new Map<string, Quote>();
-    for (const row of rows) {
-      const q = rowToTpexQuote(row);
-      if (q) map.set(row.SecuritiesCompanyCode, q);
-    }
-    return map;
-  });
-}
+// Mirrors twse.ts's QUOTE_BATCH_CHUNK_SIZE exactly, for the same reason
+// (keep each request's query string/response to a safe size).
+const OTC_QUOTE_BATCH_CHUNK_SIZE = 50;
 
 export async function fetchTpexQuote(stockNo: string): Promise<Quote> {
-  const map = await fetchTpexQuoteSnapshot();
-  const quote = map.get(stockNo);
+  const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=otc_${stockNo}.tw&json=1&delay=0`;
+  const res = await fetchWithTimeout(url, 4000, {
+    headers: { Referer: "https://mis.twse.com.tw/stock/index.jsp" },
+  });
+  const data = (await res.json()) as { msgArray?: MisRow[] };
+  const row = data.msgArray?.[0];
+  const quote = row && rowToOtcQuote(row);
   if (!quote) throw new Error(`No TPEx quote for ${stockNo}`);
   return quote;
 }
@@ -351,10 +365,26 @@ export async function fetchTpexQuote(stockNo: string): Promise<Quote> {
 export async function fetchTpexQuotesBatch(stockNos: string[]): Promise<Map<string, Quote>> {
   const map = new Map<string, Quote>();
   if (stockNos.length === 0) return map;
-  const all = await fetchTpexQuoteSnapshot();
-  const wanted = new Set(stockNos);
-  for (const [symbol, quote] of all) {
-    if (wanted.has(symbol)) map.set(symbol, quote);
+
+  const chunks = chunk(stockNos, OTC_QUOTE_BATCH_CHUNK_SIZE);
+  const results = await Promise.all(
+    chunks.map(async (group) => {
+      const chExpr = group.map((s) => `otc_${s}.tw`).join("|");
+      const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${chExpr}&json=1&delay=0`;
+      try {
+        const res = await fetchWithTimeout(url, 6000, {
+          headers: { Referer: "https://mis.twse.com.tw/stock/index.jsp" },
+        });
+        const data = (await res.json()) as { msgArray?: MisRow[] };
+        return data.msgArray ?? [];
+      } catch {
+        return [];
+      }
+    })
+  );
+  for (const row of results.flat()) {
+    const quote = rowToOtcQuote(row);
+    if (quote) map.set(row.c, quote);
   }
   return map;
 }
