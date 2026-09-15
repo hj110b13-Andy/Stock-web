@@ -3,6 +3,7 @@ import { describeTaifexNightFutures, getIndices, getTaifexNightFutures, searchSt
 import { fetchNews, fetchUsMarketNews } from "@/lib/data/news";
 import { formatSharesWithLots } from "@/lib/format";
 import { callAiProviders } from "@/lib/ai/provider";
+import { getMarketStatus, marketStatusLabel } from "@/lib/marketStatus";
 
 export interface DailyBrief {
   text: string;
@@ -87,7 +88,12 @@ export async function getDailyBrief(forceRefresh = false): Promise<DailyBrief> {
       ]);
     const chipsSummary = await buildTwChipsSummary(twGainers, twLosers);
 
+    const twStatus = getMarketStatus("TW");
+    const usStatus = getMarketStatus("US");
+
     const grounding = [
+      `【市場狀態】台股目前${marketStatusLabel(twStatus)}；美股目前${marketStatusLabel(usStatus)}（美股與台股交易時段不重疊，寫美股段落時以美股自己的狀態為準，不要套用台股的狀態）`,
+      "",
       "【大盤概況（台股＋美股）】",
       indices.length > 0
         ? indices.map((i) => `${i.name}：${i.price}（${i.change >= 0 ? "+" : ""}${i.changePercent}%）`).join("\n")
@@ -125,6 +131,7 @@ export async function getDailyBrief(forceRefresh = false): Promise<DailyBrief> {
       "第二部分「台股焦點」：具體點名至少5-6檔漲跌幅顯著的個股並說明數字，其中只要「三大法人籌碼動向」資料裡有對應的股票，要把法人是買超還是賣超一併講進去，作為解釋這檔為什麼漲跌的其中一個線索（不是唯一原因）。",
       "第三部分「美股焦點」：具體點名至少5-6檔漲跌幅顯著的個股並說明數字；如果「技術訊號共振股」資料中有股票，可以自然帶到一兩檔，說明其同時出現哪些客觀技術訊號（例如爆量、站上均線、KD交叉、布林通道），但只能描述「目前呈現的數據狀態」，絕對不能說這代表未來會漲或該買。",
       "第四部分「近期重點回顧」：這部分不是重複今天的漲跌數字，而是根據「近期市場新聞」兩份資料裡橫跨最近幾天的新聞標題與日期，整理出3-5個這幾天持續出現、值得關注的脈絡或主題（例如某個總經事件的後續發展、某產業的連續性消息、某公司連續幾天被提及的事件），用條列呈現，每點一行、簡短講清楚是什麼事件以及大概哪幾天出現，不要逐條複製新聞標題，也不要跟前三段的內容重複。新聞資料不足以整理出脈絡時，如實說明近期消息面相對平淡即可，不要硬湊。",
+      "參考資料開頭的「【市場狀態】」會告訴你台股、美股現在分別是「盤中」還是「已收盤」——這決定你怎麼描述那個市場的數字：那個市場「已收盤」時才能用『收在』『終場』『收盤』這類字眼；「盤中」時數字還在跳動、還沒定案，絕對不能用『收在』『終場』『收盤』，要改用『目前來到』『截至目前』『盤中來到』這類語氣，並且可以提醒讀者這是撰稿當下的即時數字、盤中仍會變動。台股跟美股的交易時段不重疊，兩邊要各自依照自己的狀態描述，不要因為其中一個收盤了就假設另一個也收盤（或反過來）。",
       "全文只描述現象與客觀關聯，絕對不要給出「建議買進/賣出/加碼/減碼」等任何操作建議或目標價，也不要用「值得買」「該賣」「即將噴出」「準備上漲」這類預測性或推薦性字眼。",
       "若參考資料中某部分標示為無法取得，請如實反映（例如略過或簡短說明查無資料），不要編造數字。",
       "結尾不需要再加免責聲明，網站會自動附上。",

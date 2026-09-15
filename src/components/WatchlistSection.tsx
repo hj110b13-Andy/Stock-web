@@ -11,6 +11,15 @@ function subscribe(callback: () => void) {
   return () => window.removeEventListener(WATCHLIST_CHANGED_EVENT, callback);
 }
 
+// Matches the other live-polling components (LiveIndices, LiveQuoteHeader,
+// LiveMoversBoard) — server-side quote cache TTL is 20s, so polling faster
+// wouldn't surface anything newer. This list mixes TW and US symbols with
+// different trading hours, so it just re-polls unconditionally on this
+// interval rather than tracking each market's own open/closed state — an
+// extra request for an already-closed market's unchanged quote is cheap,
+// and simpler than per-item status tracking here.
+const POLL_MS = 20_000;
+
 const EMPTY: WatchlistItem[] = [];
 type SortBy = "changePercent" | "volume" | "price" | "name";
 
@@ -54,37 +63,43 @@ export default function WatchlistSection() {
   useEffect(() => {
     if (list.length === 0) return;
     let cancelled = false;
-    Promise.all(
-      list.map(async (w): Promise<SearchItem | null> => {
-        try {
-          const res = await fetch(`/api/quote/${encodeURIComponent(w.symbol)}?market=${w.market}`);
-          if (!res.ok) return null;
-          const q: Quote = await res.json();
-          return {
-            symbol: q.symbol,
-            market: q.market,
-            name: q.name,
-            sector: "自選",
-            price: q.price,
-            changePercent: q.changePercent,
-            volume: q.volume,
-            // This view fetches one quote at a time (/api/quote/[symbol]),
-            // not the batched search list that has the trailing-average
-            // volume map alongside it (see lib/data/volumeHistory.ts) — so
-            // there's genuinely no basis to compute a real volumeTrend here.
-            // "neutral" is honest (no signal), not a fabricated guess.
-            volumeTrend: "neutral",
-          } satisfies SearchItem;
-        } catch {
-          return null;
-        }
-      })
-    ).then((results) => {
+
+    async function tick() {
+      const results = await Promise.all(
+        list.map(async (w): Promise<SearchItem | null> => {
+          try {
+            const res = await fetch(`/api/quote/${encodeURIComponent(w.symbol)}?market=${w.market}`);
+            if (!res.ok) return null;
+            const q: Quote = await res.json();
+            return {
+              symbol: q.symbol,
+              market: q.market,
+              name: q.name,
+              sector: "自選",
+              price: q.price,
+              changePercent: q.changePercent,
+              volume: q.volume,
+              // This view fetches one quote at a time (/api/quote/[symbol]),
+              // not the batched search list that has the trailing-average
+              // volume map alongside it (see lib/data/volumeHistory.ts) — so
+              // there's genuinely no basis to compute a real volumeTrend here.
+              // "neutral" is honest (no signal), not a fabricated guess.
+              volumeTrend: "neutral",
+            } satisfies SearchItem;
+          } catch {
+            return null;
+          }
+        })
+      );
       if (cancelled) return;
       setItems(results.filter((r): r is SearchItem => r !== null));
-    });
+    }
+
+    tick();
+    const timer = setInterval(tick, POLL_MS);
     return () => {
       cancelled = true;
+      clearInterval(timer);
     };
   }, [list]);
 
