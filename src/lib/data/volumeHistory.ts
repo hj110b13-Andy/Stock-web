@@ -1,6 +1,6 @@
 import { peekCached, writeCached } from "./cache";
 import { getMarketStatus } from "@/lib/marketStatus";
-import type { Market, Quote, VolumeTrend } from "./types";
+import type { Candle, Market, Quote, VolumeTrend } from "./types";
 
 /**
  * 近期每日成交量歷史——用來算「今日量 vs 這檔股票自己近期均量」的價量關係推論
@@ -87,6 +87,49 @@ export async function maybeRecordDailyVolumeSnapshot(market: Market, quoteMap: M
     // 記錄歷史失敗絕不能拖垮搜尋/報價本身——沿用全站「快取層永遠 fail open」的原則。
     console.error(`[volumeHistory] failed to record snapshot for ${market}:`, err);
   }
+}
+
+/**
+ * 一次性回填：直接用每檔股票「自己的」歷史K線（本站個股頁本來就查得到、涵蓋好幾個月）
+ * 的每日成交量，取代「等 warm-cache 每天收盤後 piggyback 記一筆、要等
+ * MIN_HISTORY_DAYS_FOR_AVERAGE 個真實交易日才有均量可用」這個冷啟動等待期。
+ * 使用者反映「現在也能查到前幾筆資料，為什麼還要等5天」——這個回填就是直接把
+ * 這些「現在就查得到」的資料拿來用，不用再乾等。
+ *
+ * 只在一次性回填端點（/api/cron/backfill-volume-history）被觸發，不是常態排程；
+ * 回填完成後，既有的 `maybeRecordDailyVolumeSnapshot` 收盤後 piggyback 機制會
+ * 自然接續往後每天累積，兩者不衝突。
+ *
+ * 刻意排除「今天」這個交易日的K線（如果剛好抓到）：避免跟 piggyback 機制今天
+ * 收盤後要記錄的那一筆重複算兩次，把同一天的量灌水進均量。
+ */
+export async function backfillVolumeHistoryFromCandles(
+  market: Market,
+  candlesBySymbol: Map<string, Candle[]>
+): Promise<{ seeded: number }> {
+  const tz = TIME_ZONE[market];
+  const today = localDateKey(new Date(), tz);
+  const key = historyKey(market);
+  const existing = (await peekCached<VolumeHistoryBlob>(key)) ?? { lastRecordedDate: "", bySymbol: {} };
+  const bySymbol: Record<string, number[]> = { ...existing.bySymbol };
+
+  let seeded = 0;
+  for (const [symbol, candles] of candlesBySymbol) {
+    const volumes = candles
+      .filter((c) => c.time !== today && c.volume > 0)
+      .slice(-HISTORY_DAYS)
+      .map((c) => c.volume);
+    if (volumes.length === 0) continue;
+    // 已經有夠長真實歷史的股票（表示 piggyback 機制已經正常運作一段時間了）
+    // 不覆蓋，避免用K線資料的些微精度差異（例如零股撮合方式不同）取代掉已經
+    // 累積的真實每日快照。
+    if ((bySymbol[symbol]?.length ?? 0) >= HISTORY_DAYS) continue;
+    bySymbol[symbol] = volumes;
+    seeded++;
+  }
+
+  await writeCached(key, { lastRecordedDate: existing.lastRecordedDate, bySymbol } satisfies VolumeHistoryBlob, HISTORY_TTL_MS);
+  return { seeded };
 }
 
 /**
