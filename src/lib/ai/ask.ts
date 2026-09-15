@@ -20,6 +20,7 @@ import { formatMarketCap, formatSharesWithLots } from "@/lib/format";
 import { callAiProviders } from "@/lib/ai/provider";
 import { getNewsFeed } from "@/lib/ai/newsfeed";
 import { computeSignals } from "@/lib/signals";
+import { computeHoldingPnl } from "@/lib/portfolio";
 import { isNearTaiexFuturesSettlement } from "@/lib/marketCalendar";
 import type { ChatTurn } from "@/lib/ai/types";
 
@@ -255,9 +256,15 @@ async function buildHoldingsGrounding(holdings: HoldingInput[]): Promise<string>
       if (!quote) return `${h.name}(${h.symbol})：目前查不到報價`;
       const base = `${quote.name}(${quote.symbol}，${quote.market === "TW" ? "台股" : "美股"})：現價 ${quote.price} ${quote.currency}，今日${quote.change >= 0 ? "漲" : "跌"} ${Math.abs(quote.changePercent)}%`;
       if (h.costBasis != null && h.shares != null && h.shares > 0) {
-        const pnl = (quote.price - h.costBasis) * h.shares;
-        const pnlPercent = h.costBasis > 0 ? ((quote.price - h.costBasis) / h.costBasis) * 100 : 0;
-        return `${base}；持有 ${h.shares} 股，平均成本 ${h.costBasis}，損益 ${pnl >= 0 ? "+" : ""}${pnl.toFixed(0)}（${pnlPercent >= 0 ? "+" : ""}${pnlPercent.toFixed(1)}%）`;
+        // Same lib/portfolio.ts math the watchlist table itself uses (buy/
+        // sell commission + TW 證交稅 folded in) — kept in one shared place
+        // specifically so chat never reports a different 損益 for the same
+        // holding than what the user is looking at on screen.
+        const { pnl, pnlPercent } = computeHoldingPnl(quote.price, h.costBasis, h.shares, h.market);
+        if (pnl == null) return `${base}；持有 ${h.shares} 股，平均成本 ${h.costBasis}`;
+        const pnlText = pnlPercent != null ? `${pnl >= 0 ? "+" : ""}${pnl.toFixed(0)}（${pnlPercent >= 0 ? "+" : ""}${pnlPercent.toFixed(1)}%）` : `${pnl >= 0 ? "+" : ""}${pnl.toFixed(0)}`;
+        const pnlLabel = h.market === "TW" ? "損益（已估算計入買賣手續費與證交稅）" : "損益";
+        return `${base}；持有 ${h.shares} 股，平均成本 ${h.costBasis}，${pnlLabel} ${pnlText}`;
       }
       return `${base}（尚未設定持股成本/股數）`;
     })

@@ -5,6 +5,7 @@ import Link from "next/link";
 import type { Market, SearchItem } from "@/lib/data";
 import { formatChange, formatPercent, formatPrice, priceDirectionClass } from "@/lib/format";
 import { hasHolding, reorderGroup, updateHolding } from "@/lib/watchlist";
+import { breakEvenPrice, computeHoldingPnl, investedAmount } from "@/lib/portfolio";
 import WatchlistButton from "./WatchlistButton";
 
 export interface HoldingItem extends SearchItem {
@@ -21,48 +22,26 @@ function groupKey(item: HoldingItem): string {
   return `${item.market}:${item.symbol}`;
 }
 
-/** Money actually put into a position — purchase price × shares, the same
- *  basis the 總成本 total above the table already uses (not fee-adjusted;
- *  only 損益平衡價 below factors fees in, since that's the one figure whose
- *  whole point is to answer "what price do I actually need to break even"). */
-function investedAmount(item: HoldingItem): number {
-  return (item.costBasis ?? 0) * (item.shares ?? 0);
+/** 0 when a field is missing/invalid — used for the 總成本/總市值 aggregates
+ *  and the held-group sort, where a per-item "—" doesn't make sense to fold
+ *  into a sum or a sort key. Per-row display goes through
+ *  investedAmount()/computeHoldingPnl() directly instead, so a genuinely
+ *  missing value still renders as "—" there, not a silent 0. */
+function investedAmountOrZero(item: HoldingItem): number {
+  if (item.costBasis == null || item.shares == null) return 0;
+  return investedAmount(item.costBasis, item.shares, item.market);
 }
 
-function pnlPercentOf(item: HoldingItem): number | null {
-  if (item.costBasis == null || item.costBasis <= 0) return null;
-  return ((item.price - item.costBasis) / item.costBasis) * 100;
-}
-
-// Standard published TW retail rates (0.1425% commission each way, 0.3%
-// 證券交易稅 on the sell side only) — deliberately the un-discounted
-// textbook figures, not any individual broker's actual (often discounted)
-// rate, since there's no way to know a user's real rate. Disclosed in the
-// column header's title tooltip rather than presented as exact. US holdings
-// skip this entirely: unlike Taiwan, there's no one standard commission/tax
-// structure across US brokers (many are already zero-commission), so
-// guessing a number would be more misleading than showing none.
-const TW_BUY_COMMISSION_RATE = 0.001425;
-const TW_SELL_COMMISSION_RATE = 0.001425;
-const TW_SELL_TAX_RATE = 0.003;
-
-/** The sale price at which total proceeds exactly cover the original
- *  purchase cost plus both sides' transaction costs — i.e. genuinely
- *  breaking even after fees, not just "back to the purchase price" (which
- *  ignores that both buying and selling cost money). Only meaningful with a
- *  real (>0) purchase price; returns null otherwise rather than a
- *  misleading "break-even at $0". */
-function breakEvenPrice(item: HoldingItem): number | null {
-  if (item.costBasis == null || item.costBasis <= 0) return null;
-  if (item.market !== "TW") return item.costBasis;
-  return (item.costBasis * (1 + TW_BUY_COMMISSION_RATE)) / (1 - TW_SELL_COMMISSION_RATE - TW_SELL_TAX_RATE);
+function pnlPercentOrZero(item: HoldingItem): number {
+  if (item.costBasis == null || item.shares == null) return 0;
+  return computeHoldingPnl(item.price, item.costBasis, item.shares, item.market).pnlPercent ?? 0;
 }
 
 type HeldSortField = "investedAmount" | "changePercent" | "pnlPercent";
 const HELD_SORT_FIELDS: Record<HeldSortField, (item: HoldingItem) => number> = {
-  investedAmount,
+  investedAmount: investedAmountOrZero,
   changePercent: (item) => item.changePercent,
-  pnlPercent: (item) => pnlPercentOf(item) ?? 0,
+  pnlPercent: pnlPercentOrZero,
 };
 
 /**
@@ -84,9 +63,19 @@ export default function WatchlistTable({ items, emptyLabel }: { items: HoldingIt
   const held = items.filter(hasHolding).sort(byOrder);
   const unheld = items.filter((i) => !hasHolding(i)).sort(byOrder);
 
-  const totalCost = held.reduce((sum, i) => sum + investedAmount(i), 0);
+  // 總成本 includes the buy-side commission actually paid (TW only — see
+  // lib/portfolio.ts), so it's real money spent, not just 購買價格×股數.
+  // 總市值 stays the plain gross valuation (股價×股數) — the conventional
+  // meaning of "market value", not a liquidation-proceeds figure. 總損益 is
+  // the sum of each row's own fee-aware 損益 (which also nets out the
+  // SELL-side commission/tax) rather than 總市值-總成本: those two totals
+  // mix a gross figure with a fee-inclusive one, so subtracting them
+  // wouldn't match summing the individually-correct per-row numbers — a
+  // small, expected gap (the not-yet-incurred sell-side friction), not a
+  // bug in either total.
+  const totalCost = held.reduce((sum, i) => sum + investedAmount(i.costBasis!, i.shares!, i.market), 0);
   const totalValue = held.reduce((sum, i) => sum + i.price * i.shares!, 0);
-  const totalPnl = totalValue - totalCost;
+  const totalPnl = held.reduce((sum, i) => sum + (computeHoldingPnl(i.price, i.costBasis!, i.shares!, i.market).pnl ?? 0), 0);
   const currency = held[0]?.market === "TW" ? "TWD" : "USD";
 
   return (
@@ -265,8 +254,24 @@ function DraggableGroup({
                   損益平衡價
                 </th>
               )}
-              {sortable && <th className="py-2 pr-4 font-medium text-right">投資金額</th>}
-              <th className="py-2 pr-4 font-medium text-right">損益</th>
+              {sortable && (
+                <th
+                  className="py-2 pr-4 font-medium text-right"
+                  title={market === "TW" ? "購買價格×股數，已計入買進手續費0.1425%" : "購買價格×股數"}
+                >
+                  投資金額
+                </th>
+              )}
+              <th
+                className="py-2 pr-4 font-medium text-right"
+                title={
+                  market === "TW"
+                    ? "以現在股價全部賣出、扣掉賣出手續費0.1425%與證交稅0.3%後的淨收入，減去投資金額（已含買進手續費）"
+                    : "(現在股價－購買價格)×股數"
+                }
+              >
+                損益
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -326,18 +331,20 @@ function HoldingRow({
   const sharesNum = Number(shares);
   const costNum = Number(costBasis);
   const hasHoldingInput = shares.trim() !== "" && costBasis.trim() !== "" && Number.isFinite(sharesNum) && Number.isFinite(costNum);
-  const pnl = hasHoldingInput ? (item.price - costNum) * sharesNum : null;
   // Zero (or blank) 購買價格 makes a *percentage* undefined (dividing by
-  // zero) even though the absolute 損益 above is still a perfectly real
+  // zero) even though the absolute 損益 can still be a perfectly real
   // number — rendering used to force this through a non-null assertion
   // assuming "pnl exists" implied "pnlPercent exists too", which crashed
   // formatPercent(null) the moment someone actually typed 0 as a cost basis
   // (a user hit this live: the page broke and stayed broken on reload,
   // since the bad value was already persisted to localStorage). Now shown
-  // as "—" instead of asserted away.
-  const pnlPercent = hasHoldingInput && costNum > 0 ? ((item.price - costNum) / costNum) * 100 : null;
-  const breakEven = hasHoldingInput ? breakEvenPrice({ ...item, costBasis: costNum }) : null;
-  const invested = hasHoldingInput ? costNum * sharesNum : null;
+  // as "—" instead of asserted away. computeHoldingPnl() itself already
+  // returns { pnl: null, pnlPercent: null } for a non-positive cost basis.
+  const { pnl, pnlPercent } = hasHoldingInput
+    ? computeHoldingPnl(item.price, costNum, sharesNum, item.market)
+    : { pnl: null, pnlPercent: null };
+  const breakEven = hasHoldingInput ? breakEvenPrice(costNum, item.market) : null;
+  const invested = hasHoldingInput ? investedAmount(costNum, sharesNum, item.market) : null;
 
   return (
     <tr ref={rowRef} className="border-b border-(--gridline) last:border-0 hover:bg-(--page-plane)">
