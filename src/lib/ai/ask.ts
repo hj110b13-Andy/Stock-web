@@ -15,6 +15,7 @@ import {
   searchStocks,
 } from "@/lib/data";
 import type { Market } from "@/lib/data";
+import { mapWithConcurrency } from "@/lib/data/cache";
 import { fetchNews, fetchNewsMulti, fetchUsMarketNews } from "@/lib/data/news";
 import { formatMarketCap, formatSharesWithLots } from "@/lib/format";
 import { callAiProviders } from "@/lib/ai/provider";
@@ -272,6 +273,75 @@ async function buildHoldingsGrounding(holdings: HoldingInput[]): Promise<string>
   return lines.join("\n");
 }
 
+// Matches the chat widget's "📋 分析我的關注清單" button text and close
+// variants — a user reported the resulting analysis reading as "just data"
+// (a one-line quote+P&L per stock, see buildHoldingsGrounding above) and
+// asked for a real per-stock analysis instead: technical+fundamental+chip+
+// news synthesized together, a trend view, and a specific suggested action
+// with a price range — the same depth a single-stock question already gets
+// via buildStockGrounding, just run for every watchlist entry at once.
+// Gated behind this intent check (rather than always running whenever
+// `holdings` is non-empty) so a casual, unrelated question that happens to
+// still be carrying the watchlist along doesn't pay for a full
+// buildStockGrounding() fan-out it didn't ask for.
+const HOLDINGS_ANALYSIS_INTENT_PATTERN =
+  /分析.{0,4}(我|一下)?.{0,4}(關注|持股|清單)|(關注|持股)清單.{0,6}分析|看看.{0,4}(我|我的)?.{0,4}(關注|持股)|我的?(關注|持股).{0,6}(如何|怎麼樣|狀況|表現)/;
+
+// A full buildStockGrounding() per holding is several sub-fetches each
+// (quote/chart/earnings/fundamentals/chips/announcements/news) — bounded
+// concurrency keeps a watchlist with many entries from firing a burst of
+// requests at every upstream source at once, the same class of problem
+// MOMENTUM_CHART_CONCURRENCY exists for elsewhere in this codebase.
+const HOLDINGS_ANALYSIS_CONCURRENCY = 4;
+// Past this many holdings, the rest fall back to the lightweight one-line
+// summary (buildHoldingsGrounding) instead of a full grounding each — a
+// personal watchlist realistically has a handful to a couple dozen entries,
+// not enough to usually hit this, but it caps the worst case rather than
+// letting one very long watchlist turn into an enormous, slow request.
+const HOLDINGS_ANALYSIS_LIMIT = 12;
+
+/**
+ * The richer counterpart to buildHoldingsGrounding() above, used
+ * specifically when the user is asking for a real per-stock analysis of
+ * their watchlist (see HOLDINGS_ANALYSIS_INTENT_PATTERN) rather than just a
+ * quick price/P&L check. Reuses buildStockGrounding() — the exact same
+ * technical/fundamental/chip/news data a single-stock question already
+ * gets — for every holding, and tags each block with whether it's an
+ * actual position (持有中) or watch-only (僅關注), plus its P&L when it's a
+ * real position, so the system prompt can tell the model which decision
+ * framing applies to which stock.
+ */
+async function buildHoldingsAnalysisGrounding(holdings: HoldingInput[]): Promise<string> {
+  if (holdings.length === 0) return "";
+  const rich = holdings.slice(0, HOLDINGS_ANALYSIS_LIMIT);
+  const overflow = holdings.slice(HOLDINGS_ANALYSIS_LIMIT);
+
+  const richBlocks = await mapWithConcurrency(rich, HOLDINGS_ANALYSIS_CONCURRENCY, async (h) => {
+    const grounding = await buildStockGrounding({ symbol: h.symbol, market: h.market }).catch(() => undefined);
+    if (!grounding) return `${h.name}(${h.symbol})：目前查不到完整資料，暫時無法分析`;
+    const isHeld = h.costBasis != null && h.shares != null && h.shares > 0;
+    let holdingLine = "狀態：僅關注，尚未持有";
+    if (isHeld) {
+      // getQuote() is the same 20s-TTL cache buildStockGrounding() itself
+      // just read from — a second call here is a cheap in-process hit, not
+      // a real extra upstream fetch — needed because buildStockGrounding()
+      // returns pre-formatted text, not the quote object, and P&L needs the
+      // live price.
+      const quote = await getQuote(h.symbol, h.market).catch(() => null);
+      const { pnl, pnlPercent } = quote ? computeHoldingPnl(quote.price, h.costBasis!, h.shares!, h.market) : { pnl: null, pnlPercent: null };
+      const pnlText =
+        pnl != null
+          ? `，${h.market === "TW" ? "損益（已估算計入買賣手續費與證交稅）" : "損益"} ${pnl >= 0 ? "+" : ""}${pnl.toFixed(0)}${pnlPercent != null ? `（${pnlPercent >= 0 ? "+" : ""}${pnlPercent.toFixed(1)}%）` : ""}`
+          : "";
+      holdingLine = `狀態：持有中，持有 ${h.shares} 股，平均成本 ${h.costBasis}${pnlText}`;
+    }
+    return `${grounding.text}\n${holdingLine}`;
+  });
+
+  const overflowText = overflow.length > 0 ? await buildHoldingsGrounding(overflow) : "";
+  return [richBlocks.join("\n\n---\n\n"), overflowText].filter(Boolean).join("\n\n---\n\n");
+}
+
 // A comparison question ("台積電跟聯發科比較"、"2330和2454哪個好") names more
 // than one company at once — capped at 4 so a rambling question naming half
 // the market doesn't turn into 4+ parallel buildStockGrounding() calls each
@@ -456,6 +526,7 @@ export async function answerQuestion(
   // theme screen.
   const themeMatch = targets.length === 0 ? detectTheme(question) : undefined;
   const wantsMovers = targets.length === 0 && !themeMatch && MOVERS_INTENT_PATTERN.test(question);
+  const wantsHoldingsAnalysis = holdings.length > 0 && HOLDINGS_ANALYSIS_INTENT_PATTERN.test(question);
 
   let groundedSymbol: string | undefined;
 
@@ -484,7 +555,7 @@ export async function answerQuestion(
         .catch(() => ""),
       wantsMovers ? buildMoversGrounding() : Promise.resolve(""),
       themeMatch ? buildThemeGrounding(themeMatch) : Promise.resolve(""),
-      buildHoldingsGrounding(holdings).catch(() => ""),
+      (wantsHoldingsAnalysis ? buildHoldingsAnalysisGrounding(holdings) : buildHoldingsGrounding(holdings)).catch(() => ""),
       Promise.all([fetchNews("台股", 6), fetchUsMarketNews(5)]).catch(() => [[], []] as const),
       // Shares the same 20-minute cache as the /news page's AI classifier —
       // a near-free reuse of work already done there (which items are
@@ -625,7 +696,18 @@ export async function answerQuestion(
     "籌碼面的三大法人數字資料裡已經同時附上「股」跟換算好的「約XX張」兩種寫法，直接照抄其中一種講就好，絕對不要自己把股數重新換算成張（1張=1000股這個換算你自己心算很容易出錯，之前就出現過1000倍、10倍算錯、甚至同一句話裡數字前後矛盾的情況），也不要把股數誤講成張數的量級。",
     "『三大法人合計』跟『外資』是兩個不同的數字，資料裡會寫成『三大法人合計X（外資Y、投信Z、自營商W）』這種格式——X是三大法人的加總、Y才是外資單獨的數字，兩者不相等，絕對不能把X說成是外資賣超/買超多少，也不能把Y說成是三大法人合計；引用哪個數字，就要明確講清楚它的正確來源名稱（三大法人合計／外資／投信／自營商），不要因為兩個數字寫在同一句裡就搞混或省略歸屬，之前就出現過把三大法人合計的數字講成外資單獨賣超的錯誤。",
     "給看法或建議時，要綜合基本面（估值高不高）、財報（營收獲利趨勢）、籌碼面（法人是在買超還是賣超、融資是不是異常暴增暴減）、消息面（近期新聞/重大訊息有沒有利多利空）、技術面（均線/RSI/MACD/KD/布林通道/量價）這幾個面向一起判斷，不要只看單一面向就下結論；面向之間互相矛盾時（例如技術面強但法人在賣、或基本面便宜但籌碼面偏空）要老實點出這個矛盾，不要選擇性忽略對你的結論不利的那一面。",
-    "拿到「我的關注清單/持股」時（通常是使用者按了『分析我的關注清單』或問『幫我看看我關注的股票』），逐檔講重點：現價/今日漲跌、有損益資料的講清楚賺賠多少錢跟百分比、你對這檔現況的看法；沒設定成本的那幾檔就只講現況看法，不用特別提醒『你沒填成本』這種瑣事。多檔的話用條列，每檔一行講完，不要每檔都展開成一大段。",
+    wantsHoldingsAnalysis
+      ? // 使用者要求：這個功能原本只逐檔丟現價/漲跌一行帶過，太像單純報數據；
+        // 現在要真正綜合技術面/基本面/籌碼面/消息面寫出完整分析、給明確的
+        // 未來走勢看法跟具體建議動作+價位區間+理由，讓使用者按一次就拿到
+        // 完整資訊，不用再三追問。「我的關注清單/持股」這時候會是完整的
+        // 個股資料（跟單獨問一檔股票拿到的資料一樣豐富，非簡化摘要），逐檔
+        // 都有「狀態：持有中/僅關注」標示。
+        "使用者這次按了『分析我的關注清單』（或問了類似問題），這次「我的關注清單/持股」拿到的是每一檔完整的個股資料（跟單獨問一檔股票時一樣豐富，包含技術面、基本面、財報、籌碼面、近期新聞），不是簡化的一行摘要——這代表使用者要的是真正的深度分析，不是效率優先的簡短回覆，這條規則的要求優先於前面『簡短、能一兩句話講完就不要拉長』的通則。務必先把清單依「狀態」分成兩組分別處理，兩組中間空一行、各自用一個粗體小標題（例如「**持有中**」「**僅關注（未持有）**」），完全沒有其中一組時就不用寫那組的標題：" +
+          "「持有中」每一檔都要包含：①目前損益金額與百分比（資料裡已經算好，直接引用）；②綜合技術面、基本面、籌碼面、近期消息寫一段真正的分析（不是條列數字，是有邏輯地講清楚現在情勢、彼此是否互相印證或矛盾）；③明確的未來走勢看法（偏多/偏空/盤整，大概理由）；④具體建議動作，只能從「續抱」「加碼」「減碼」「停損／全部賣出」擇一明講，並且一定要給出對應的具體價位或價位區間（例如「若拉回到X-Y元之間可以考慮加碼」「跌破X元建議停損」「漲到X元以上可以考慮先獲利了結一部分」），價位要根據資料裡實際的技術訊號（均線、近期高低點、布林通道上下軌等）或基本面數字（本益比合理區間）推算，不要憑空給整數關卡；⑤簡短講清楚判斷依據是什麼（例如『均線多頭排列+法人買超，但RSI已過熱，所以建議部分獲利了結而不是繼續加碼』）。" +
+          "「僅關注（未持有）」每一檔都要包含：①綜合技術面、基本面、籌碼面、近期消息的分析；②明確的未來走勢看法；③具體建議動作，只能從「買進」「暫緩觀望」擇一明講，兩種都要給價位：「買進」要給建議進場價位或區間（可以是現價附近，也可以是『拉回到X元再進場』），「暫緩觀望」要給觸發買進的具體條件與價位（例如『站上X元且法人轉buy才考慮進場』『等拉回到支撐X元附近再說』），不能只說『觀望』兩個字不給任何條件；④簡短講清楚判斷依據。" +
+          "每一檔都要有自己的粗體小標題（股票名稱+代號），檔數多的話這會是一則長回覆，這是使用者主動要求的深度分析、不是要壓縮成條列，不用擔心變長；但同一檔內部還是要精簡有重點，不要為了長而灌水重複的話。查不到完整資料的那幾檔就老實說暫時無法分析，不要用其他資料源的知識瞎猜硬寫一段。"
+      : "拿到「我的關注清單/持股」時（通常是使用者問『幫我看看我關注的股票』這類輕量問法，不是按下『分析我的關注清單』按鈕），逐檔講重點：現價/今日漲跌、有損益資料的講清楚賺賠多少錢跟百分比、你對這檔現況的看法；沒設定成本的那幾檔就只講現況看法，不用特別提醒『你沒填成本』這種瑣事。多檔的話用條列，每檔一行講完，不要每檔都展開成一大段。",
     "RSI超買（≥70）代表短線漲多、可能過熱，是提醒追高風險的訊號，不是『動能強勁、還可以買』的理由；RSI超賣（≤30）代表短線跌深，可能有反彈機會，但也可能繼續破底，同樣不是自動的買進理由。這兩種狀態都要講成『提醒、要注意』的語氣，不要因為使用者換個問法（例如問『還有其他機會嗎』）就把同一個超買訊號改講成正面理由，同一檔股票同樣的數據，解讀要前後一致。",
     "分析漲跌原因或做連結時，不要每次都只套用『升息/降息』這個單一角度，要視資料實際情況考慮更多常見的直接、間接影響關係，例如：美債殖利率上升通常對成長股/科技股估值不利（未來獲利折現價值變低）；美元強弱會牽動原物料價格與出口型企業的匯兌損益；新台幣兌美元匯率會影響台灣出口導向電子/半導體公司的獲利；油價上漲通常不利航空/塑化成本、但可能對能源類股有利；半導體庫存週期會讓上中下游（設備商、晶圓代工、封測、終端品牌）彼此連動；地緣政治風險升高時，資金常流向黃金、日圓這類避險資產；CPI（消費者物價指數）或非農就業數據公布，本身就常常是市場短期波動的直接觸發點，因為會立刻改變市場對升息/降息的預期；重要權值股或產業龍頭（例如台積電、輝達）公布財報或釋出財測展望，常會直接牽動整個供應鏈/同族群類股的股價，不是只影響那一檔自己。這些只是輔助判斷的角度，只有在資料能支撐、真的合理連結時才用，不要每次回答都硬套一輪，也不要講出資料裡沒有根據的因果關係。",
     "如果真的要談升息/降息這個角度，不要只講『升息通常對股市不利』這種一句話結論，可以視情況講得更細緻：升息剛宣布或初期（1-3個月）市場通常劇烈震盪、重新定價，這段時間股市走弱是正常現象，不代表趨勢已經轉空；如果已經進入升息中後期、經濟基本面依然穩健，市場通常會逐漸適應並回穩；如果市場開始預期升息即將結束或轉向降息，反而常常提前出現反彈。產業影響也不對稱：科技/成長股/高負債產業受升息衝擊通常最大（未來獲利折現價值下降、融資成本墊高），金融股（存放款利差擴大受惠）、電信/食品/公用事業這類高股息防禦股相對抗跌。最終市場會不會真的轉空，關鍵在於經濟走向「軟著陸」（通膨降溫但經濟沒垮，長線仍隨企業獲利表現）還是「硬著陸」（陷入衰退、企業獲利真的下滑）——這幾層判斷都只在資料能支撐、有實際根據時才講，不要每次都照本宣科講一遍完整框架，講出來的部分要跟眼前的資料對得上。",
@@ -644,7 +726,22 @@ export async function answerQuestion(
     : `使用者問題：${question}\n（目前沒有可用的參考資料，請根據一般金融知識簡短回答，並說明無法取得即時資料。）`;
 
   const messages: ChatTurn[] = [...history, { role: "user", content: userContent }];
-  const result = await callAiProviders(system, messages);
+  // A per-stock analysis across a whole watchlist is genuinely long output
+  // (each holding gets its own multi-sentence writeup) — the default budget
+  // (sized for a normal one-or-two-sentence chat reply) cut this off
+  // mid-stock on a real multi-holding watchlist. Scales a little with how
+  // many holdings are actually being analyzed rather than a single fixed
+  // number, so a 3-stock watchlist doesn't pay for headroom a 12-stock one
+  // needs. This is also the one path in this file where a user is
+  // knowingly clicking a "give me the full analysis" button and expects to
+  // wait a bit, not a live-typing exchange — same tradeoff brief.ts makes
+  // for its own long-form generation.
+  const result = wantsHoldingsAnalysis
+    ? await callAiProviders(system, messages, {
+        timeoutMs: 45000,
+        maxOutputTokens: Math.min(2000 + holdings.length * 400, 8000),
+      })
+    : await callAiProviders(system, messages);
   if (result.usedAi) {
     return { answer: sanitizeLeakedMarkers(result.answer), groundedSymbol, usedAi: true };
   }

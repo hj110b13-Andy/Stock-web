@@ -2,6 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { answerQuestion, type HoldingInput } from "@/lib/ai/ask";
 import type { ChatTurn } from "@/lib/ai/types";
 
+// Default Node function budget isn't enough for the "分析我的關注清單" path:
+// that fans out a full buildStockGrounding() (quote+chart+chips+fundamentals+
+// earnings+news, several sub-fetches each) per holding, then a longer AI
+// call to actually write a per-stock analysis — see ask.ts's
+// HOLDINGS_ANALYSIS_INTENT_PATTERN branch for the fuller reasoning.
+export const maxDuration = 60;
+
 const MAX_HISTORY_TURNS = 10;
 const MAX_TURN_LENGTH = 2000;
 const MAX_HOLDINGS = 50;
