@@ -15,6 +15,12 @@ import { findInUniverse } from "./universe";
 // trimmed by candle count after fetching (see fetchUsCandles below) — "5d"
 // doesn't need that, Yahoo supports it directly.
 const RANGE_PARAM: Record<ChartRange, string> = {
+  // Unreachable in practice — lib/data/index.ts's getChart() intercepts
+  // "today" before it ever reaches fetchUsCandles(), routing it to
+  // fetchYahooIntradayCandles() below instead (a completely different
+  // Yahoo `interval` param, not a `range` value this daily-candle fetcher
+  // uses). Present only so this Record stays exhaustive over ChartRange.
+  today: "1d",
   "5d": "5d",
   "10d": "1mo",
   "1m": "1mo",
@@ -380,4 +386,64 @@ export async function fetchUsCandles(symbol: string, range: ChartRange): Promise
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+/**
+ * Intraday (1-minute bars, current session only) — a completely different
+ * Yahoo request shape from fetchYahooChart's daily candles above
+ * (`interval=1m&range=1d` vs `interval=1d&range=<period>`), so it's its own
+ * function rather than a branch of fetchYahooChart/RANGE_PARAM.
+ *
+ * Confirmed live (2026-09-15) that Yahoo's chart endpoint also serves this
+ * for TAIWAN tickers, not just US ones — `2330.TW` (TWSE) and `6811.TWO`
+ * (TPEx) both return real, current-session minute bars with no auth needed
+ * (unlike v7/finance/quote, this endpoint has never required the
+ * crumb/cookie handshake — see getYahooAuth's own comment for why that one
+ * does). That's the only reason lib/data/index.ts's getChart() can offer a
+ * "today" range for TW stocks at all: TWSE/TPEx's own official endpoints
+ * have no free public intraday-history API (mis.twse.com.tw's MIS endpoint,
+ * used elsewhere in this codebase for real-time TW quotes, only ever
+ * returns the CURRENT snapshot, not a same-day time series) — so this is
+ * deliberately routed through Yahoo for TW too, via index.ts appending the
+ * right suffix (`.TW` for TWSE, `.TWO` for TPEx) before calling this
+ * function, rather than this file assuming a US-only caller.
+ */
+export async function fetchYahooIntradayCandles(yahooSymbol: string): Promise<Candle[]> {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?range=1d&interval=1m`;
+  const res = await fetchWithTimeout(url, 4500, {
+    headers: { "User-Agent": YAHOO_UA, Accept: "application/json" },
+  });
+  const data = (await res.json()) as YahooChartResponse;
+  const result = data.chart.result?.[0];
+  if (!result) throw new Error(data.chart.error?.description ?? `No Yahoo intraday chart data for ${yahooSymbol}`);
+
+  const timestamps = result.timestamp ?? [];
+  const quote = result.indicators.quote[0];
+  const candles: Candle[] = [];
+  for (let i = 0; i < timestamps.length; i++) {
+    const open = quote.open[i];
+    const high = quote.high[i];
+    const low = quote.low[i];
+    const close = quote.close[i];
+    // Yahoo pads pre/post-market minutes with nulls even for a plain "1d"
+    // range on symbols without extended-hours data — skip rather than
+    // fabricate a bar.
+    if (open == null || high == null || low == null || close == null) continue;
+    candles.push({
+      // Full ISO instant (not sliced to a date) — this is what makes
+      // StockChart.tsx's toChartTime() able to place each point at its
+      // actual time of day instead of colliding every bar from today onto
+      // one business-day key. Round-trips exactly through
+      // `new Date(seconds * 1000).toISOString()` there since these
+      // timestamps are already whole-second/whole-minute values.
+      time: new Date(timestamps[i] * 1000).toISOString(),
+      open: round2(open),
+      high: round2(high),
+      low: round2(low),
+      close: round2(close),
+      volume: quote.volume[i] ?? 0,
+    });
+  }
+  if (candles.length === 0) throw new Error(`No Yahoo intraday candles for ${yahooSymbol}`);
+  return candles;
 }

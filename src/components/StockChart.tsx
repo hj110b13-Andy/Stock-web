@@ -38,6 +38,7 @@ const FALLBACK_PALETTE = {
 };
 
 const RANGE_LABELS: Record<ChartRange, string> = {
+  today: "當日",
   "5d": "5日",
   "10d": "10日",
   "1m": "1個月",
@@ -48,7 +49,7 @@ const RANGE_LABELS: Record<ChartRange, string> = {
   "5y": "5年",
   "10y": "10年",
 };
-const RANGES: ChartRange[] = ["5d", "10d", "1m", "3m", "6m", "1y", "2y", "5y", "10y"];
+const RANGES: ChartRange[] = ["today", "5d", "10d", "1m", "3m", "6m", "1y", "2y", "5y", "10y"];
 
 // Fixed, saturated colors chosen to read reasonably against both the light
 // and dark chart backgrounds — deliberately NOT theme-adjusted the way the
@@ -84,9 +85,18 @@ const INDICATOR_LABELS: Array<{ key: keyof ChartIndicatorSettings; label: string
 // produces the same, stable layout instead of panes shuffling around.
 const SUB_PANE_INDICATORS: Array<"macd" | "rsi" | "kd"> = ["macd", "rsi", "kd"];
 
+// The numeric branch used to slice down to just a date ("YYYY-MM-DD"),
+// which was harmless while nothing ever actually fed lightweight-charts a
+// numeric Time — the daily ranges pass a "YYYY-MM-DD" *string* (accepted by
+// lightweight-charts as a business-day string) straight through, so this
+// branch was dead code until the "today" intraday range started feeding
+// real UTCTimestamp seconds (needed for sub-day resolution — a business-day
+// string can't represent a time-of-day at all). Kept as the *full* instant
+// now, not truncated, so intraday candles sharing the same calendar date
+// don't collide in candleMapRef below.
 function timeToKey(t: Time): string {
   if (typeof t === "string") return t;
-  if (typeof t === "number") return new Date(t * 1000).toISOString().slice(0, 10);
+  if (typeof t === "number") return new Date(t * 1000).toISOString();
   const y = t.year;
   const m = String(t.month).padStart(2, "0");
   const d = String(t.day).padStart(2, "0");
@@ -103,6 +113,7 @@ export default function StockChart({
   currentPrice: number;
 }) {
   const [range, setRange] = useState<ChartRange>("3m");
+  const isIntraday = range === "today";
   const [candles, setCandles] = useState<Candle[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -186,9 +197,16 @@ export default function StockChart({
   // distinct from price) are needed for the CURRENT settings, and at which
   // index — recomputed whenever settings change, feeding the chart-creation
   // effect below so panes are added in the same fixed order every time.
+  // Forced empty for "today": MA/Bollinger/MACD/RSI/KD are all computed over
+  // many DAILY bars (a 20-day MA, an RSI over 14 daily closes) — run against
+  // a single day's minute bars instead, "MA20" would just be a near-flat
+  // line of the last 20 minutes' average, a meaningless number dressed up as
+  // a familiar indicator. Simpler and more honest to not offer them at all
+  // for the one intraday range than to compute something technically
+  // "there" but conceptually wrong.
   const activeSubPanes = useMemo(
-    () => SUB_PANE_INDICATORS.filter((k) => indicators[k]),
-    [indicators]
+    () => (isIntraday ? [] : SUB_PANE_INDICATORS.filter((k) => indicators[k])),
+    [indicators, isIntraday]
   );
 
   // Recreated (not just updated) whenever which indicators are enabled
@@ -253,21 +271,26 @@ export default function StockChart({
 
     // Price-pane overlays: moving averages and Bollinger bands share the
     // same value range as the candles, so they go on pane 0 alongside them.
-    (["ma5", "ma10", "ma20", "ma60"] as const).forEach((key) => {
-      if (!indicators[key]) return;
-      maSeriesRef.current[key] = chart.addSeries(LineSeries, {
-        color: MA_COLORS[key],
-        lineWidth: 1,
-        priceLineVisible: false,
-        lastValueVisible: false,
-        crosshairMarkerVisible: false,
+    // Skipped entirely for "today" — see activeSubPanes' comment above for
+    // why these don't mean anything computed over a single day's minute
+    // bars instead of many daily ones.
+    if (!isIntraday) {
+      (["ma5", "ma10", "ma20", "ma60"] as const).forEach((key) => {
+        if (!indicators[key]) return;
+        maSeriesRef.current[key] = chart.addSeries(LineSeries, {
+          color: MA_COLORS[key],
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        });
       });
-    });
-    if (indicators.bollinger) {
-      const opts = { lineWidth: 1 as const, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false };
-      bollingerSeriesRef.current.upper = chart.addSeries(LineSeries, { ...opts, color: BOLLINGER_COLOR });
-      bollingerSeriesRef.current.middle = chart.addSeries(LineSeries, { ...opts, color: BOLLINGER_COLOR, lineStyle: 2 });
-      bollingerSeriesRef.current.lower = chart.addSeries(LineSeries, { ...opts, color: BOLLINGER_COLOR });
+      if (indicators.bollinger) {
+        const opts = { lineWidth: 1 as const, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false };
+        bollingerSeriesRef.current.upper = chart.addSeries(LineSeries, { ...opts, color: BOLLINGER_COLOR });
+        bollingerSeriesRef.current.middle = chart.addSeries(LineSeries, { ...opts, color: BOLLINGER_COLOR, lineStyle: 2 });
+        bollingerSeriesRef.current.lower = chart.addSeries(LineSeries, { ...opts, color: BOLLINGER_COLOR });
+      }
     }
 
     // Sub-panes: each gets a fixed index based on SUB_PANE_INDICATORS order
@@ -366,9 +389,15 @@ export default function StockChart({
     };
     // Recreated on indicator-settings change (activeSubPanes derives from
     // it) — theme changes are handled separately below via applyOptions
-    // rather than a full recreate.
+    // rather than a full recreate. Also recreated when crossing into/out of
+    // "today" specifically (isIntraday, not raw `range`) — that's what
+    // decides whether the MA/Bollinger/sub-pane series above get created at
+    // all (see the `range !== "today"` guards); depending on raw `range`
+    // instead would tear down and rebuild the whole chart (losing zoom/pan)
+    // on every single range switch, even between two ranges that don't
+    // actually change which panes exist (e.g. "3m" -> "6m").
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [indicators]);
+  }, [indicators, isIntraday]);
 
   // The chart paints itself imperatively, so unlike the rest of the page it
   // does not follow a theme switch on its own — without this it keeps the
@@ -405,23 +434,34 @@ export default function StockChart({
   // applied in the effect below, which runs after the palette has been
   // refreshed. Deriving them here instead would read the previous palette,
   // since render happens before effects, leaving the bars one toggle behind.
+  // Daily ranges: c.time is a plain "YYYY-MM-DD" string, which
+  // lightweight-charts accepts directly as a business-day string (the `as
+  // unknown as UTCTimestamp` is a type-level lie, not a runtime one — it's
+  // never actually treated as a numeric timestamp). The "today" intraday
+  // range instead needs a REAL numeric UTCTimestamp (seconds) so
+  // lightweight-charts can place points within a single day — a business-day
+  // string has no time-of-day component at all.
+  const toChartTime = (time: string): UTCTimestamp =>
+    isIntraday ? (Math.floor(new Date(time).getTime() / 1000) as UTCTimestamp) : (time as unknown as UTCTimestamp);
+
   const chartData = useMemo(() => {
     if (!candles) return null;
     return {
       candles: candles.map((c) => ({
-        time: c.time as unknown as UTCTimestamp,
+        time: toChartTime(c.time),
         open: c.open,
         high: c.high,
         low: c.low,
         close: c.close,
       })),
       volume: candles.map((c) => ({
-        time: c.time as unknown as UTCTimestamp,
+        time: toChartTime(c.time),
         value: c.volume,
         rising: c.close >= c.open,
       })),
     };
-  }, [candles]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [candles, range]);
 
   useEffect(() => {
     candleMapRef.current = new Map((candles ?? []).map((c) => [c.time, c]));
@@ -484,9 +524,14 @@ export default function StockChart({
     chartRef.current.timeScale().fitContent();
   }, [chartData, themeTick, chartVersion, candles]);
 
+  // Same reasoning as activeSubPanes above: every one of these signals (MA
+  // alignment, RSI, MACD, volume-vs-trailing-average) is defined in terms of
+  // daily bars, so computing them against a single day's minute bars would
+  // just produce a number shaped like a familiar signal without the
+  // familiar signal's actual meaning.
   const signals = useMemo(
-    () => (candles ? computeSignals(candles, currentPrice, range) : []),
-    [candles, currentPrice, range]
+    () => (candles && !isIntraday ? computeSignals(candles, currentPrice, range) : []),
+    [candles, currentPrice, range, isIntraday]
   );
 
   // Sub-panes each need real vertical room of their own, or MACD/RSI/KD
@@ -511,6 +556,12 @@ export default function StockChart({
             </button>
           ))}
         </div>
+        {/* Hidden for "today" rather than shown-but-inert: every one of
+            these indicators is computed over daily bars (see activeSubPanes'
+            comment), so none of them would actually appear on an intraday
+            chart even with a box checked — a visible-but-nonfunctional
+            control is more confusing than no control at all. */}
+        {!isIntraday && (
         <div className="relative">
           <button
             onClick={() => setShowSettings((v) => !v)}
@@ -530,6 +581,7 @@ export default function StockChart({
             </div>
           )}
         </div>
+        )}
       </div>
       {signals.length > 0 && (
         <div className="mb-3">

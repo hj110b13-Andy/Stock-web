@@ -6,6 +6,11 @@ export interface Signal {
 }
 
 const RANGE_LABEL: Record<ChartRange, string> = {
+  // Never actually reached — StockChart.tsx skips calling computeSignals()
+  // entirely for "today" (see its own comment for why: every signal here is
+  // defined in terms of daily bars). Present only so this Record stays
+  // exhaustive over ChartRange.
+  today: "當日",
   "5d": "5日",
   "10d": "10日",
   "1m": "1個月",

@@ -17,6 +17,11 @@ export interface Quote {
 }
 
 export interface Candle {
+  /** Daily ranges: a plain "YYYY-MM-DD" calendar date. The "today" intraday
+   *  range instead puts a full ISO timestamp here (date+time+offset) — the
+   *  two shapes need different handling on the chart-rendering side (see
+   *  StockChart.tsx), since lightweight-charts needs a UNIX-seconds
+   *  timestamp for intraday points but a plain date string for daily ones. */
   time: string;
   open: number;
   high: number;
@@ -32,7 +37,12 @@ export interface ChartResponse {
   candles: Candle[];
 }
 
-export type ChartRange = "5d" | "10d" | "1m" | "3m" | "6m" | "1y" | "2y" | "5y" | "10y";
+/**
+ * "today" is intraday (minute-level, current trading session only, line
+ * chart) — a fundamentally different shape from the other, daily-candle
+ * ranges (see Candle.time's comment and StockChart.tsx's rendering split).
+ */
+export type ChartRange = "today" | "5d" | "10d" | "1m" | "3m" | "6m" | "1y" | "2y" | "5y" | "10y";
 
 /**
  * 價量關係推論的三種結果——**不是真實委買委賣單成交量分類**（本站沒有那種逐筆

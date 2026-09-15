@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getChart } from "@/lib/data";
 import type { ChartRange, Market } from "@/lib/data";
 
-const VALID_RANGES: ChartRange[] = ["5d", "10d", "1m", "3m", "6m", "1y", "2y", "5y", "10y"];
+const VALID_RANGES: ChartRange[] = ["today", "5d", "10d", "1m", "3m", "6m", "1y", "2y", "5y", "10y"];
 // A cold 5y/10y TW/TPEx chart fans out into up to 60-120 bounded-concurrency
 // (10 at a time — see MONTH_FETCH_CONCURRENCY in twse.ts/tpex.ts) monthly
 // requests, which can comfortably exceed Vercel's ~10s Node function

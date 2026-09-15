@@ -23,7 +23,7 @@ import {
   fetchTpexQuote,
   fetchTpexQuotesBatch,
 } from "./tpex";
-import { fetchUsCandles, fetchUsEarnings, fetchUsFundamentals, fetchUsQuote, fetchUsQuotesBatch } from "./us";
+import { fetchUsCandles, fetchUsEarnings, fetchUsFundamentals, fetchUsQuote, fetchUsQuotesBatch, fetchYahooIntradayCandles } from "./us";
 import { fetchTaifexNightFutures } from "./taifex";
 import type { TaifexFuturesQuote } from "./types";
 import { computeSignals, type Signal } from "@/lib/signals";
@@ -73,6 +73,12 @@ export function normalizeSymbol(symbolInput: string): string {
 
 const QUOTE_TTL_MS = 20_000;
 const CHART_TTL_MS = 5 * 60_000;
+// The "today" intraday range updates roughly once a minute at the source
+// (Yahoo's own 1-minute bars) — a 5-minute TTL would show the same stale
+// snapshot for several new bars in a row, defeating the point of an
+// intraday view. 60s keeps it genuinely near-live without re-fetching for
+// every single poll of a chart a user might have open.
+const INTRADAY_CHART_TTL_MS = 60_000;
 
 /**
  * TW has two exchanges behind one public "TW" market — a given symbol must
@@ -136,6 +142,22 @@ export async function getQuote(symbolInput: string, marketHint?: Market): Promis
   });
 }
 
+/**
+ * TWSE/TPEx have no free public intraday-history API of their own (their
+ * MIS real-time endpoint — used elsewhere for live quotes — only ever
+ * returns the current snapshot, not a same-day series), so "today" is
+ * routed through Yahoo for TW too, via the same ticker-suffix convention
+ * Yahoo itself uses on its own site (`.TW` for TWSE, `.TWO` for TPEx) —
+ * confirmed live that both work. Defaults to `.TW` when the exchange isn't
+ * resolvable (a symbol not yet in the universe) since TWSE is the common
+ * case; the fetch simply fails (surfaced as "no chart data", not a
+ * fabricated result) if that guess is wrong for a given symbol.
+ */
+function toYahooSymbol(symbol: string, market: Market): string {
+  if (market !== "TW") return symbol;
+  return resolveTwExchange(symbol) === "TPEx" ? `${symbol}.TWO` : `${symbol}.TW`;
+}
+
 /** Returns null when the live source can't be reached; never fabricated candles. */
 export async function getChart(
   symbolInput: string,
@@ -144,9 +166,15 @@ export async function getChart(
 ): Promise<ChartResponse | null> {
   const symbol = normalizeSymbol(symbolInput);
   const market = marketHint ?? detectMarket(symbol);
-  return cached(`chart:${market}:${symbol}:${range}`, CHART_TTL_MS, async () => {
+  const ttl = range === "today" ? INTRADAY_CHART_TTL_MS : CHART_TTL_MS;
+  return cached(`chart:${market}:${symbol}:${range}`, ttl, async () => {
     try {
-      const candles = market === "TW" ? await fetchTwChart(symbol, range) : await fetchUsCandles(symbol, range);
+      const candles =
+        range === "today"
+          ? await fetchYahooIntradayCandles(toYahooSymbol(symbol, market))
+          : market === "TW"
+            ? await fetchTwChart(symbol, range)
+            : await fetchUsCandles(symbol, range);
       return { symbol, market, range, candles };
     } catch {
       return null;
