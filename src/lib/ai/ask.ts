@@ -8,17 +8,19 @@ import {
   describeTaifexNightFutures,
   getIndices,
   getMaterialAnnouncements,
+  getChipsRanking,
   getMultiSignalStocks,
   getQuote,
   getTaifexNightFutures,
   getTwUniverse,
+  getValueScreen,
   getVolumeSurgeStocks,
   searchStocks,
 } from "@/lib/data";
 import type { Market } from "@/lib/data";
 import { mapWithConcurrency } from "@/lib/data/cache";
 import { fetchNews, fetchNewsMulti, fetchUsMarketNews } from "@/lib/data/news";
-import { formatMarketCap, formatSharesWithLots } from "@/lib/format";
+import { formatMarketCap, formatSharesWithLots, formatTurnover } from "@/lib/format";
 import { callAiProviders } from "@/lib/ai/provider";
 import { getNewsFeed } from "@/lib/ai/newsfeed";
 import { computeSignals } from "@/lib/signals";
@@ -231,15 +233,24 @@ const MOMENTUM_N = 12;
 // 排名限制），再算每一檔的連續上漲天數，補上這個原本抓不到的族群。
 const VOLUME_SURGE_N = 30;
 
+// 「成交金額最大」的排行要另外列，不能靠漲幅榜代打：使用者問「今天成交量最大的
+// 是哪幾檔」時，原本資料裡根本沒有這份排行，AI 只好拿技術訊號共振股的法人買賣超
+// 硬湊，答出來的東西跟「成交量最大」沒有關係。
+const TURNOVER_N = 10;
+
 async function buildMoversGrounding(): Promise<string> {
   try {
-    const [twGainers, usGainers, twMomentum, usMomentum, twVolumeSurge] = await Promise.all([
-      searchStocks({ market: "TW", sortBy: "changePercent", sortDir: "desc" }),
-      searchStocks({ market: "US", sortBy: "changePercent", sortDir: "desc" }),
-      getMultiSignalStocks("TW"),
-      getMultiSignalStocks("US"),
-      getVolumeSurgeStocks("TW").catch(() => []),
-    ]);
+    const [twGainers, usGainers, twMomentum, usMomentum, twVolumeSurge, twTurnover, twValueScreen, twChipsRanking] =
+      await Promise.all([
+        searchStocks({ market: "TW", sortBy: "changePercent", sortDir: "desc" }),
+        searchStocks({ market: "US", sortBy: "changePercent", sortDir: "desc" }),
+        getMultiSignalStocks("TW"),
+        getMultiSignalStocks("US"),
+        getVolumeSurgeStocks("TW").catch(() => []),
+        searchStocks({ market: "TW", sortBy: "turnover", sortDir: "desc" }).catch(() => []),
+        getValueScreen("TW").catch(() => null),
+        getChipsRanking("TW").catch(() => null),
+      ]);
     // TW momentum candidates also get their institutional flow attached —
     // without this, a "what else looks good" question could only be
     // answered with price/technical data, which reads as generic. Chip
@@ -274,12 +285,69 @@ async function buildMoversGrounding(): Promise<string> {
           return `${s.name}(${s.symbol})，現價${s.price}(+${s.changePercent}%)，${ratioText}，${streakText}`;
         })
         .join("\n") || "（今天沒有符合「價漲且量能明顯高於自身均量」條件的股票）";
+
+    // 以下三組清單（成交金額榜、估值/跌幅篩選、法人買賣超排行）都是後來補的：
+    // 實測發現使用者問「本益比低的股票」「殖利率高的股票」「今天跌最多的」
+    // 「三大法人在買什麼」「外資買超最多的」「成交量最大的」這些非常自然的篩選
+    // 問法時，AI 一律回答「資料裡沒有提供個股的本益比/殖利率數據」或拿漲幅榜硬湊
+    // ——本站其實全都有全市場資料（見 getValueScreen/getChipsRanking 的註解），
+    // 只是從來沒有整理成清單送進來，跟「價漲量增誤答沒有資料」是同一類問題。
+    const fmtTurnover = (items: typeof twTurnover) =>
+      items
+        .slice(0, TURNOVER_N)
+        .map((s) => `${s.name}(${s.symbol})，現價${s.price}(${s.changePercent >= 0 ? "+" : ""}${s.changePercent}%)，成交金額約${formatTurnover(s.turnover, "TW")}`)
+        .join("\n") || "（無資料）";
+    const fmtValue = (items: NonNullable<typeof twValueScreen>["lowPe"], metric: "pe" | "yield" | "pb" | "change") =>
+      items
+        .map((s) => {
+          const detail =
+            metric === "pe"
+              ? `本益比 ${s.peRatio}`
+              : metric === "yield"
+                ? `殖利率 ${s.dividendYield}%`
+                : metric === "pb"
+                  ? `股價淨值比 ${s.pbRatio}`
+                  : `今日${s.changePercent}%`;
+          const extras = [
+            metric !== "pe" && s.peRatio != null ? `本益比 ${s.peRatio}` : "",
+            metric !== "yield" && s.dividendYield != null ? `殖利率 ${s.dividendYield}%` : "",
+            metric !== "pb" && s.pbRatio != null ? `股價淨值比 ${s.pbRatio}` : "",
+          ].filter(Boolean);
+          return `${s.name}(${s.symbol})，現價${s.price}(${s.changePercent >= 0 ? "+" : ""}${s.changePercent}%)，${detail}${extras.length > 0 ? `；${extras.join("、")}` : ""}`;
+        })
+        .join("\n") || "（無資料）";
+    const fmtChips = (items: NonNullable<typeof twChipsRanking>["institutionalBuy"]) =>
+      items
+        .map((s) => `${s.name}(${s.symbol})，現價${s.price}(${s.changePercent >= 0 ? "+" : ""}${s.changePercent}%)，${formatSharesWithLots(s.netShares)}`)
+        .join("\n") || "（無資料）";
+
+    const valueBlocks = twValueScreen
+      ? [
+          `台股「本益比最低」排行（全市場掃描，只含今日成交金額 3000 萬元以上、真的有人在交易的股票，依本益比由低到高，共列 ${twValueScreen.lowPe.length} 檔。本益比低不等於便宜——景氣循環股在獲利高點時本益比天生就低，回答時要提醒這一點）：\n${fmtValue(twValueScreen.lowPe, "pe")}`,
+          `台股「殖利率最高」排行（同上流動性條件，依殖利率由高到低，共列 ${twValueScreen.highYield.length} 檔。殖利率是用「過去已配發的現金股利 ÷ 現價」算的，不保證明年配一樣多）：\n${fmtValue(twValueScreen.highYield, "yield")}`,
+          `台股「股價淨值比最低」排行（同上流動性條件，共列 ${twValueScreen.lowPb.length} 檔）：\n${fmtValue(twValueScreen.lowPb, "pb")}`,
+          `台股今日跌幅榜（同上流動性條件，依今日跌幅由大到小，共列 ${twValueScreen.decliners.length} 檔。使用者問「跌最多的」「跌深反彈」「有沒有可以撿的」時就用這份清單，不要說沒有資料；但「跌得多」不等於「跌深了該撿」，要結合估值跟趨勢講清楚）：\n${fmtValue(twValueScreen.decliners, "change")}`,
+        ]
+      : [];
+    const chipsBlocks = twChipsRanking
+      ? [
+          `台股今日「三大法人合計買超」排行前${twChipsRanking.institutionalBuy.length}（全市場，股數已換算好對應張數，直接引用不要自己重算）：\n${fmtChips(twChipsRanking.institutionalBuy)}`,
+          `台股今日「三大法人合計賣超」排行前${twChipsRanking.institutionalSell.length}：\n${fmtChips(twChipsRanking.institutionalSell)}`,
+          `台股今日「外資買超」排行前${twChipsRanking.foreignBuy.length}（只算外資這一家，跟上面的三大法人合計是不同數字，不要混用）：\n${fmtChips(twChipsRanking.foreignBuy)}`,
+          `台股今日「外資賣超」排行前${twChipsRanking.foreignSell.length}：\n${fmtChips(twChipsRanking.foreignSell)}`,
+          `台股今日「投信買超」排行前${twChipsRanking.trustBuy.length}：\n${fmtChips(twChipsRanking.trustBuy)}`,
+        ]
+      : [];
+
     return [
       `台股今日漲幅榜前${GAINERS_N}：${fmtGainer(twGainers)}`,
       `美股今日漲幅榜前${GAINERS_N}：${fmtGainer(usGainers)}`,
       `台股技術訊號共振股（同時符合≥2個客觀技術訊號，依訊號數量排序，共${twMomentum.length}檔，列出前${MOMENTUM_N}，含三大法人買賣超；股數已換算好對應張數，直接引用不要自己重算）：\n${fmtMomentum(twMomentumSlice, twChips)}`,
       `美股技術訊號共振股（共${usMomentum.length}檔，列出前${MOMENTUM_N}）：\n${fmtMomentum(usMomentum.slice(0, MOMENTUM_N))}`,
       `台股今日「價漲量增」股票（今日上漲、且成交量明顯高於自己近期均量，依成交金額排序，共${twVolumeSurge.length}檔，列出前${surgeSlice.length}，每檔都附上實際算出來的連續上漲天數——這是傳統技術分析的價量關係推論，不是真實委買賣單資料，見前述說明；使用者問「剛漲一天/連漲兩天/連漲三天...」這類指定天數的問題時，直接從這份清單裡依「連漲N天」精準篩選回答，天數是逐檔用近1個月K線實際比對算出來的真實數字，不是用今日漲跌%推測，不需要說「沒有資料」）：\n${fmtSurge(surgeSlice)}`,
+      `台股今日成交金額排行前${TURNOVER_N}（使用者問「今天成交量/成交金額最大的是哪幾檔」時用這份，不要拿漲幅榜或法人買超清單代替）：\n${fmtTurnover(twTurnover)}`,
+      ...valueBlocks,
+      ...chipsBlocks,
     ].join("\n\n");
   } catch {
     return "";
@@ -505,6 +573,20 @@ const SECTOR_THEMES: Array<{ pattern: RegExp; sector: string; label: string }> =
   { pattern: /資訊服務股/, sector: "資訊服務業", label: "資訊服務" },
 ];
 
+// 使用者問「XX概念股/XX類股/XX相關股有哪些」的通用形狀。用途不是拿來當篩選條件，
+// 而是拿來偵測「這是一個主題式問題」——這樣即使 detectTheme 對不到任何主題，也知道
+// 要明講「本站沒有這個主題的分類清單」，而不是讓 AI 拿今日焦點清單冒充。
+//
+// 實測抓到的真實問題：問「軍工概念股有哪些可以留意？」「機器人概念股有哪些可以留意？」
+// 時，本站根本沒有這兩個主題的分類資料，但因為問句含「有哪些」而觸發了一般的
+// 今日焦點資料，AI 就把長園科(8038)、天鉞電(5251)、台灣精材(3467) 這些當天剛好爆量
+// 漲停的股票寫成「以下是本站整理的常見軍工概念股清單」「台股常見的機器人概念股清單」
+// ——這些公司跟軍工/機器人沒有關係，等於憑空捏造了一個產業分類掛在真實公司身上，
+// 比單純答不出來嚴重得多（新手可能真的because這句話去買）。同一批測試裡問「綠能概念股」
+// 「重電股」「國防航太類股」時卻又誠實回答「本站沒有這個分類」，代表沒有規則約束、
+// 全看模型當下心情，所以這裡補上明確的標記與 system prompt 規則。
+const THEME_QUESTION_PATTERN = /(概念股|相關股|類股|族群|供應鏈|概念類股)/;
+
 const AI_THEME_SYMBOLS: Array<{ symbol: string; market: Market }> = [
   { symbol: "2330", market: "TW" }, // 台積電
   { symbol: "2317", market: "TW" }, // 鴻海
@@ -529,12 +611,31 @@ function detectTheme(question: string): ThemeMatch | undefined {
 
 const THEME_SYMBOL_LIMIT = 10;
 const THEME_CHIP_LIMIT = 5;
+// 一個官方產業分類裡「最具代表性」的幾檔（依今日成交金額，等同於市場資金最關注的
+// 龍頭/主流股）一定要先保留位置，剩下的位置才給「今日漲最多」的。
+//
+// 原本這裡只有 sortBy: "changePercent" 一種排序，結果實測問「航運股最近怎麼樣？」時，
+// 回答列出的是志信(2611)、遠雄港(5607)、宅配通(2642)、捷迅(2643) 這些今天剛好小漲
+// 0.x% 的小型物流股，長榮(2603)、陽明(2609)、萬海(2615) 這些使用者心裡真正在問的
+// 航運龍頭一檔都沒出現（因為它們今天是跌的，排在漲幅榜後面）；問「半導體類股今天
+// 表現如何」同樣沒有台積電、聯發科。資料本身沒錯，但對使用者來說等於答非所問。
+const THEME_BELLWETHER_LIMIT = 5;
 
 async function buildThemeGrounding(theme: ThemeMatch): Promise<string> {
   try {
     let pool: Array<{ symbol: string; market: Market; name: string; price: number; changePercent: number }>;
     if (theme.sector) {
-      pool = await searchStocks({ market: "TW", sectors: [theme.sector], sortBy: "changePercent", sortDir: "desc" });
+      const [byTurnover, byChange] = await Promise.all([
+        searchStocks({ market: "TW", sectors: [theme.sector], sortBy: "turnover", sortDir: "desc" }),
+        searchStocks({ market: "TW", sectors: [theme.sector], sortBy: "changePercent", sortDir: "desc" }),
+      ]);
+      const picked = new Map<string, (typeof byTurnover)[number]>();
+      for (const s of byTurnover.slice(0, THEME_BELLWETHER_LIMIT)) picked.set(s.symbol, s);
+      for (const s of byChange) {
+        if (picked.size >= THEME_SYMBOL_LIMIT) break;
+        if (!picked.has(s.symbol)) picked.set(s.symbol, s);
+      }
+      pool = [...picked.values()].sort((a, b) => b.changePercent - a.changePercent);
     } else if (theme.symbols) {
       const quotes = await Promise.all(theme.symbols.map((s) => getQuote(s.symbol, s.market).catch(() => null)));
       pool = quotes
@@ -558,7 +659,7 @@ async function buildThemeGrounding(theme: ThemeMatch): Promise<string> {
     });
     const note = theme.curated
       ? `（本站整理的常見${theme.label}相關個股，非完整或官方分類清單，僅供參考）`
-      : `（依 TWSE/TPEx 官方產業分類「${theme.sector}」列出，依今日漲跌幅排序，共${pool.length}檔，列出前${shown.length}檔）`;
+      : `（依 TWSE/TPEx 官方產業分類「${theme.sector}」挑出：先取今日成交金額最大的幾檔——也就是這個類股裡資金最集中、最具代表性的主流股，再補上今日漲幅較大的其他個股，最後依今日漲跌幅排序，共列 ${shown.length} 檔。這不是整個類股的完整名單，回答時不要說成「這個類股只有這幾檔」）`;
     return `${note}\n${lines.join("\n")}`;
   } catch {
     return "";
@@ -579,6 +680,9 @@ export async function answerQuestion(
   // AI概念股" should still ground 台積電 itself, not switch over to the
   // theme screen.
   const themeMatch = targets.length === 0 ? detectTheme(question) : undefined;
+  // 問的是主題/概念股，但本站沒有這個主題的分類資料（見 THEME_QUESTION_PATTERN
+  // 的說明）——這種情況要明講，不能讓 AI 拿一般的今日焦點清單冒充成該主題的成分股。
+  const unknownTheme = targets.length === 0 && !themeMatch && THEME_QUESTION_PATTERN.test(question);
   const wantsMovers = targets.length === 0 && !themeMatch && conversationWantsMovers(question, history);
   const wantsHoldingsAnalysis = holdings.length > 0 && HOLDINGS_ANALYSIS_INTENT_PATTERN.test(question);
   // The "問AI關於<股票>" button on every stock page pre-fills exactly this
@@ -723,18 +827,47 @@ export async function answerQuestion(
       ? `本月台指期（台股期貨/選擇權）結算日是 ${settlement.settlementDateIso}，快到了，這幾天大盤/權值股可能會出現法人為結算調節部位的量價波動，回答時可以視情況提及這個角度，不用每次都硬套。`
       : "";
 
-  const grounding = [
-    stockGroundingText,
-    notFoundNote,
-    partialNotFoundNote,
-    specialDateNote ? `【台股特殊日期】\n${specialDateNote}` : "",
-    indexGrounding ? `【大盤概況（台股＋美股）】\n${indexGrounding}` : "",
-    pinnedEventsText ? `【近期重大事件（AI 已判斷為可能影響整體大盤等級）】\n${pinnedEventsText}` : "",
-    marketNewsText ? `【近期市場新聞】\n${marketNewsText}` : "",
-    moversGrounding ? `【今日焦點數據（漲幅榜、技術訊號共振股）】\n${moversGrounding}` : "",
-    themeGrounding ? `【主題股清單】\n${themeGrounding}` : "",
-    holdingsGrounding ? `【我的關注清單/持股】\n${holdingsGrounding}` : "",
-  ]
+  // 每個區塊都標明「AI 掛掉時可不可以直接拿給使用者看」。
+  //
+  // 會分這兩種，是因為實測踩到一個真實的外洩問題：Gemini 免費方案是「每分鐘」限流，
+  // 連續問幾題就會 429，這時候 callAiProviders 回 usedAi:false，走 buildCannedAnswer
+  // 這條退路。原本 buildCannedAnswer 是把整包 grounding 原封不動印給使用者，於是
+  // 聊天視窗裡真的出現了「回答時可以視情況提及這個角度，不用每次都硬套。」「股數已經
+  // 換算好對應張數，直接引用不要自己重算」「不需要說『沒有資料』」這種寫給 AI 看的
+  // 指令，以及【內部系統標記／非使用者可見文字，禁止原樣照抄輸出】這個標記本身——
+  // 對使用者來說完全是天書，而且等於把提示詞攤開來給人看。
+  //
+  // userSafe:false 的區塊有兩類：①純粹是寫給模型的指示（查無資料標記、主題不存在
+  // 標記）；②雖然帶著真實數據、但標題/說明裡混了模型指令的清單（今日焦點數據、
+  // 台股特殊日期）。第二類不是不能給使用者看，而是要另外寫一份乾淨的版本才行，
+  // 在 AI 本來就掛掉的當下，與其印出夾雜指令的半成品，不如誠實請使用者稍後再試。
+  const groundingSections: Array<{ text: string; userSafe: boolean }> = [
+    { text: stockGroundingText, userSafe: true },
+    { text: notFoundNote, userSafe: false },
+    { text: partialNotFoundNote, userSafe: false },
+    { text: specialDateNote ? `【台股特殊日期】\n${specialDateNote}` : "", userSafe: false },
+    { text: indexGrounding ? `【大盤概況（台股＋美股）】\n${indexGrounding}` : "", userSafe: true },
+    {
+      text: pinnedEventsText ? `【近期重大事件（AI 已判斷為可能影響整體大盤等級）】\n${pinnedEventsText}` : "",
+      userSafe: true,
+    },
+    { text: marketNewsText ? `【近期市場新聞】\n${marketNewsText}` : "", userSafe: true },
+    {
+      text: moversGrounding ? `【今日焦點數據（漲幅榜、技術訊號共振股）】\n${moversGrounding}` : "",
+      userSafe: false,
+    },
+    { text: themeGrounding ? `【主題股清單】\n${themeGrounding}` : "", userSafe: true },
+    {
+      text: unknownTheme
+        ? "【內部系統標記／非使用者可見文字，禁止原樣照抄輸出】使用者這句話問的是某個主題／概念股／類股族群，但本站沒有對應的分類資料（本站只有 TWSE/TPEx 官方產業分類，例如半導體業、航運業、金融保險業、生技醫療業、鋼鐵工業、光電業、通信網路業、資訊服務業，外加一份人工整理的 AI 供應鏈清單）。請直接、誠實地說「本站目前沒有這個主題的分類清單」，然後可以改為建議使用者直接給幾檔想看的股票代號、或改問本站有的官方產業分類。絕對不可以把下面「今日焦點數據」裡的漲幅榜、技術訊號共振股、價漲量增清單當成這個主題的成分股列出來——那些股票只是今天剛好量價變化大，跟使用者問的主題沒有任何已查證的關係，把它們寫成「以下是常見的XX概念股」等於是在幫真實公司捏造一個不存在的產業分類，比答不出來嚴重得多。"
+        : "",
+      userSafe: false,
+    },
+    { text: holdingsGrounding ? `【我的關注清單/持股】\n${holdingsGrounding}` : "", userSafe: true },
+  ];
+
+  const grounding = groundingSections
+    .map((s) => s.text)
     .filter(Boolean)
     .join("\n\n");
 
@@ -785,6 +918,7 @@ export async function answerQuestion(
     "使用者之前的提問與你的回覆會一併附上作為對話紀錄，回答新問題時請自然承接對話脈絡（例如使用者接著問「那美股呢」時，要記得他上一句在問什麼）。",
     "使用者問『還有其他/還有別的/有沒有機會』這類接續問題時，優先從「今日焦點數據」的技術訊號共振股/漲幅榜/價漲量增清單裡挑對話中還沒提過的標的，並具體引用該檔的數據（訊號、法人買賣超、漲跌幅、連漲天數），不要因為想不到新標的就退回『AI伺服器供應鏈』『半導體設備股』『防禦性類股』這種沒有點名具體股票、任何人不用看盤都講得出來的空泛說法；如果資料裡真的已經沒有還沒提過的標的，就老實說『目前資料裡比較突出的大概就這幾檔』，不要硬掰新的類股概念湊答案。",
     "使用者問『價漲量增』『剛漲一天』『連漲N天』（N可以是任何天數，包含1、2天這種很短的天數）這類篩選問題時，一律先實際檢視「今日焦點數據」裡的「價漲量增」清單，這份清單每一檔都已經附上真實算出來的連續上漲天數，直接依天數篩選、點名符合的股票並附上實際數字（連漲天數、均量倍數、漲跌幅）；只有在這份清單裡真的一檔都對不上使用者指定的天數時，才能回答『今天符合這個天數的价涨量增股票，資料裡沒有』，而且要明確講出『資料裡有N天、M天…等其他天數的標的，如果想看那些也可以告訴我』，不要因為使用者指定的天數剛好不在清單裡，就整句回成語意含糊的『沒有資料』讓使用者以為完全沒有任何價漲量增的股票；同一段對話裡使用者陸續問不同天數（例如先問2天、再問3天、5天）時，每次都要重新檢視同一份清單裡符合『這次』天數的股票，不要用上一次沒找到就自己記成『這份清單本來就沒有任何符合天數的股票』的錯誤結論套用到後面每一次追問——之前真實發生過連續4次追問都答錯『沒有資料』，直到使用者自己點名兩檔股票才被迫承認查到了，這種情況絕對不能再發生。",
+    "「今日焦點數據」除了漲幅榜、技術訊號共振股、價漲量增清單之外，現在還固定附上這幾份全市場排行：成交金額排行、本益比最低排行、殖利率最高排行、股價淨值比最低排行、今日跌幅榜、三大法人買超/賣超排行、外資買超/賣超排行、投信買超排行。使用者問「有沒有本益比低的股票」「殖利率高的可以存股嗎」「今天跌最多的有哪些」「有沒有跌深可以撿的」「今天成交量最大的是哪幾檔」「三大法人今天在買什麼」「外資買超最多的是哪幾檔」這類問題時，一律先看對應的那份排行清單、直接點名股票並附上實際數字，絕對不要再回答「資料裡沒有提供個股的本益比/殖利率數據」或「沒有特別列出外資買超最多的股票」——這些資料現在都有了。也不要張冠李戴：問成交金額就看成交金額排行，不要拿漲幅榜或法人買超清單充數；問外資就看外資那份，不要用三大法人合計的數字代答。另外要幫使用者把話說完整：本益比低有可能是景氣循環股在獲利高點（之後獲利下滑本益比反而會變高），殖利率高有可能是股價跌下來撐出來的、或今年配得多明年不一定，今日跌幅大不等於「跌深了可以撿」，這些提醒要順帶講，不要只把排行唸過一遍。",
     "使用者一次問到兩檔以上股票做比較（例如『A跟B比較』『這幾檔誰比較好』）時，如果「個股資料」有列出多個區塊（會分別標示每一檔），要針對每一檔各自的實際數字逐項比較（現價/漲跌、本益比、營收/EPS成長、法人買賣超、技術面），講出你覺得哪一檔目前比較好、為什麼，不要只把每檔資料複述一遍卻不下結論；如果其中某幾檔查不到資料，就照實只講查得到的那幾檔並誠實說明另一檔查不到，不要用自己的知識幫查不到的那檔瞎猜數字或做比較。",
     "使用者問『XX概念股/XX類股/XX相關股有哪些』這類主題式問題時（例如『AI概念股』『半導體股』『航運股』），直接引用「主題股清單」區塊裡的真實股票與數據來回答，可以綜合漲跌幅與法人籌碼講出你覺得目前比較值得留意的幾檔，但只能從清單裡的股票挑、不要無中生有列出清單以外的公司；清單如果註明是『本站整理的常見相關個股、非完整或官方分類清單』，回答時就照實反映這一點（例如『以下是幾檔常見的相關個股，不是完整清單』），不要講得像官方權威分類。",
     "提到任何一檔個股時，一律同時寫出它在資料裡的完整名稱與股票代號（例如『台灣精材(3467)』，不可以只寫『精材』），而且名稱要原封不動照抄資料裡的寫法、不要自己簡稱或省略字——台股有很多名稱只差一兩個字的不同公司（例如台灣精材3467 與 精材3374 是兩家不同公司、當天漲跌方向可能完全相反），省略代號或簡稱會讓使用者看成另一檔股票。",
@@ -822,7 +956,7 @@ export async function answerQuestion(
   }
 
   return {
-    answer: buildCannedAnswer(grounding, groundedSymbol, result.failureReason ?? "未知原因"),
+    answer: buildCannedAnswer(groundingSections, groundedSymbol, result.failureReason ?? "未知原因"),
     groundedSymbol,
     usedAi: false,
   };
@@ -842,12 +976,29 @@ function sanitizeLeakedMarkers(answer: string): string {
   return "目前查不到這檔股票/公司的資料，可能是名稱或代號打錯、或不在本站資料涵蓋範圍（本站台股目前涵蓋證交所上市（TWSE）及櫃買中心上櫃（TPEx）公司，不含興櫃；美股則是約150多檔精選跨產業大型股，不是完整美股市場，用公司名稱或代號都可以查）。";
 }
 
-function buildCannedAnswer(grounding: string, groundedSymbol: string | undefined, reason: string): string {
-  const lines = [
-    groundedSymbol ? `以下是關於 ${groundedSymbol} 的目前資料：` : "以下是目前的市場資料：",
-    grounding || "（目前無法取得資料，可能是網路或資料源暫時無法連線。）",
+/**
+ * AI 供應商整個失敗時的退路。只印 userSafe 的資料區塊（見 groundingSections 上方
+ * 那段說明：原本是把整包 grounding 照印，結果把寫給模型看的指令跟內部標記一起攤給
+ * 使用者看）。
+ */
+function buildCannedAnswer(
+  sections: Array<{ text: string; userSafe: boolean }>,
+  groundedSymbol: string | undefined,
+  reason: string
+): string {
+  const safeText = sections
+    .filter((s) => s.userSafe && s.text)
+    .map((s) => s.text)
+    .join("\n\n");
+  const header = `AI 分析暫時無法產生（原因：${reason.replace(/。$/, "")}），過一下下再問一次通常就好了。`;
+  if (!safeText) {
+    return `${header}\n\n目前也沒有可以直接顯示的現成資料，請稍後再試一次。`;
+  }
+  return [
+    header,
     "",
-    `提醒：AI 問答目前無法產生完整回覆（原因：${reason.replace(/。$/, "")}），以上僅為原始資料整理，並非 AI 生成的分析。`,
-  ];
-  return lines.join("\n");
+    groundedSymbol ? `先把查到的 ${groundedSymbol} 原始資料放在下面給你看：` : "先把查到的原始市場資料放在下面給你看：",
+    "",
+    safeText,
+  ].join("\n");
 }

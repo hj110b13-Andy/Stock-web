@@ -349,14 +349,58 @@ const MAX_TPEX_UNIVERSE = 900;
 // was typed into chat/search instead of its numeric code.
 let twUniverseSnapshot: UniverseEntry[] = TW_UNIVERSE_SEED;
 let twFullCompanySnapshot: UniverseEntry[] = TW_UNIVERSE_SEED;
-// Pre-sorted (longest name first) once per getTwUniverse() refresh, not on
-// every findSymbolByName() call — that function runs on every chat message,
-// and re-sorting ~1000+ entries per call would be wasted work repeated on a
-// hot path for a list that only actually changes once a day.
-let nameLookupPool: UniverseEntry[] = buildNameLookupPool(TW_UNIVERSE_SEED);
+/** 一個可以拿來在文字裡比對的名稱（公司全名、去掉 Inc./Corp. 後的簡稱，或
+ *  美股的中文俗名），以及它對應到哪一檔股票。 */
+interface NameLookupTerm {
+  /** 已經轉成小寫，比對時不用每次再轉一遍。 */
+  term: string;
+  entry: UniverseEntry;
+}
 
-function buildNameLookupPool(twCompanies: UniverseEntry[]): UniverseEntry[] {
-  return [...twCompanies, ...US_UNIVERSE].sort((a, b) => b.name.length - a.name.length);
+// Pre-built and pre-sorted (longest *term* first) once per getTwUniverse()
+// refresh, not on every findSymbolByName() call — that function runs on
+// every chat message, and re-sorting ~1000+ entries per call would be
+// wasted work repeated on a hot path for a list that only actually changes
+// once a day.
+//
+// Sorted by the length of each individual match term rather than by
+// entry.name.length: those two used to disagree whenever a match candidate
+// wasn't the full legal name, and adding Chinese aliases for US stocks
+// (US_NAME_ALIASES) made that gap matter. A 3-character alias like 「特斯拉」
+// hangs off an entry whose name ("Tesla Inc.") is 10 characters long, so
+// ordering by entry.name.length would let it be tried *before* a longer,
+// more specific Taiwanese company name — exactly the "shorter name steals
+// the match" failure findAllSymbolsByName's claimed-range logic exists to
+// prevent. Ordering by the term actually being searched for keeps the
+// "longest, most specific match wins" rule true for every candidate form.
+let nameLookupTerms: NameLookupTerm[] | undefined;
+
+/**
+ * Built on first use rather than eagerly at module load. buildNameLookupTerms
+ * reads CORP_SUFFIX_PATTERN and US_NAME_ALIASES, both `const`s declared
+ * further down this file — a `const` is in its temporal dead zone until its
+ * own declaration statement runs, so evaluating this at the top of the module
+ * would throw a ReferenceError the instant anything imported this file. (The
+ * old entry-based pool got away with eager initialization only because it
+ * sorted on `entry.name.length` and touched neither of those constants.)
+ */
+function getNameLookupTerms(): NameLookupTerm[] {
+  if (!nameLookupTerms) nameLookupTerms = buildNameLookupTerms(TW_UNIVERSE_SEED);
+  return nameLookupTerms;
+}
+
+const MIN_NAME_MATCH_LENGTH = 2;
+
+function buildNameLookupTerms(twCompanies: UniverseEntry[]): NameLookupTerm[] {
+  const terms: NameLookupTerm[] = [];
+  for (const entry of [...twCompanies, ...US_UNIVERSE]) {
+    for (const candidate of matchCandidates(entry)) {
+      if (candidate.length >= MIN_NAME_MATCH_LENGTH) {
+        terms.push({ term: candidate.toLowerCase(), entry });
+      }
+    }
+  }
+  return terms.sort((a, b) => b.term.length - a.term.length);
 }
 
 /**
@@ -488,7 +532,7 @@ export async function getTwUniverse(): Promise<UniverseEntry[]> {
     }
   }
   twFullCompanySnapshot = full;
-  nameLookupPool = buildNameLookupPool(full);
+  nameLookupTerms = buildNameLookupTerms(full);
   const capped = capUniverse(full);
   twUniverseSnapshot = capped;
   return capped;
@@ -509,9 +553,100 @@ export function findInUniverse(symbol: string, market?: Market): UniverseEntry |
 // possible) still work too.
 const CORP_SUFFIX_PATTERN = /[,.]?\s+(inc|corp|corporation|co|ltd|plc|company|holdings?|group)\.?$/i;
 
-function matchCandidates(name: string): string[] {
+/**
+ * 美股個股的中文俗名。US_UNIVERSE 只存英文法定名稱，但這個網站的使用者是
+ * 台灣的一般人/長輩——他們問美股時幾乎不會打 "Tesla" 或 "TSLA"，而是直接
+ * 打「特斯拉」。實測抓到的真實 bug：問「特斯拉現在多少錢？值得買嗎？」
+ * 回答「目前查不到特斯拉的資料…不在本站資料涵蓋範圍」，但 TSLA 明明就在
+ * US_UNIVERSE 裡——純粹是名稱比對只認英文造成的假性「查不到」，跟「價漲量增
+ * 誤答沒有資料」是同一類（有資料卻答沒有）的問題。
+ *
+ * 只收錄台灣財經媒體長期慣用、辨識度高的譯名，並同時收常見的簡體/中國譯法
+ * （使用者可能從簡體資訊來源看到「英伟达」「奈飞」而照打）。刻意不收罕用或
+ * 自創譯名，避免拿一個沒人用的詞去誤攔其他問題。
+ *
+ * 重要：這裡的每個詞都必須確認「不是任何台股公司簡稱的子字串」，否則會把台股
+ * 問題誤判成美股（例如絕對不能把「台積電」設成 TSM 的別名，那會讓所有問 2330
+ * 的問題跑去查 ADR；只收「台積電ADR」這種明確指名 ADR 的寫法）。
+ */
+const US_NAME_ALIASES: Record<string, string[]> = {
+  AAPL: ["蘋果", "苹果"],
+  MSFT: ["微軟", "微软"],
+  NVDA: ["輝達", "英偉達", "英伟达"],
+  AVGO: ["博通"],
+  ORCL: ["甲骨文"],
+  ADBE: ["奧多比"],
+  CSCO: ["思科"],
+  AMD: ["超微半導體", "超微"],
+  TXN: ["德州儀器", "德州仪器"],
+  QCOM: ["高通"],
+  AMAT: ["應用材料", "应用材料"],
+  MU: ["美光"],
+  LRCX: ["科林研發", "科林研发"],
+  KLAC: ["科磊"],
+  INTC: ["英特爾", "英特尔"],
+  DELL: ["戴爾", "戴尔"],
+  // HPQ 刻意不設「惠普」別名：台股 8424 的公司簡稱就叫「惠普」（惠普科技），
+  // 兩邊字面完全相同，設了就會讓問台股惠普的人拿到美股 HP 的資料。
+  UBER: ["優步", "优步"],
+  ABNB: ["愛彼迎"],
+  // 只收明確指名 ADR 的寫法——「台積電」本身一定要留給台股 2330。
+  TSM: ["台積電ADR", "台積電 ADR", "台積電adr"],
+  GOOGL: ["谷歌", "google"],
+  META: ["臉書", "脸书"],
+  NFLX: ["網飛", "奈飛", "奈飞"],
+  DIS: ["迪士尼"],
+  CMCSA: ["康卡斯特"],
+  VZ: ["威訊"],
+  AMZN: ["亞馬遜", "亚马逊"],
+  TSLA: ["特斯拉"],
+  HD: ["家得寶"],
+  MCD: ["麥當勞", "麦当劳"],
+  NKE: ["耐吉", "耐克"],
+  SBUX: ["星巴克"],
+  GM: ["通用汽車", "通用汽车"],
+  WMT: ["沃爾瑪", "沃尔玛"],
+  PG: ["寶僑", "寶潔", "宝洁"],
+  KO: ["可口可樂", "可口可乐"],
+  PEP: ["百事可樂", "百事可乐"],
+  COST: ["好市多", "開市客"],
+  PM: ["菲利普莫里斯"],
+  UNH: ["聯合健康", "联合健康"],
+  // 只收台灣慣用的「嬌生」：中國譯法「強生」跟台股 4747 的簡稱「強生*」
+  // 只差一個代表特殊註記的星號，使用者打「強生」時會被這個別名攔走。
+  JNJ: ["嬌生"],
+  LLY: ["禮來", "礼来"],
+  PFE: ["輝瑞", "辉瑞"],
+  MRK: ["默克"],
+  ABT: ["亞培"],
+  AMGN: ["安進"],
+  JPM: ["摩根大通", "小摩"],
+  MA: ["萬事達卡", "萬事達", "万事达"],
+  BAC: ["美國銀行", "美银"],
+  GS: ["高盛"],
+  MS: ["摩根士丹利", "大摩"],
+  AXP: ["美國運通", "美国运通"],
+  C: ["花旗"],
+  BLK: ["貝萊德", "贝莱德"],
+  GE: ["奇異電氣", "通用電氣", "通用电气"],
+  CAT: ["開拓重工", "卡特彼勒"],
+  BA: ["波音"],
+  RTX: ["雷神"],
+  LMT: ["洛克希德馬丁", "洛克希德"],
+  DE: ["強鹿", "迪爾公司"],
+  FDX: ["聯邦快遞", "联邦快递"],
+  XOM: ["埃克森美孚", "艾克森美孚"],
+  CVX: ["雪佛龍", "雪佛龙"],
+  NEM: ["紐蒙特"],
+  FCX: ["自由港"],
+};
+
+function matchCandidates(entry: UniverseEntry): string[] {
+  const { name } = entry;
   const stripped = name.replace(CORP_SUFFIX_PATTERN, "").trim();
-  return stripped && stripped !== name ? [name, stripped] : [name];
+  const candidates = stripped && stripped !== name ? [name, stripped] : [name];
+  const aliases = entry.market === "US" ? US_NAME_ALIASES[entry.symbol.toUpperCase()] : undefined;
+  return aliases ? [...candidates, ...aliases] : candidates;
 }
 
 /**
@@ -527,11 +662,7 @@ function matchCandidates(name: string): string[] {
  */
 export function findSymbolByName(text: string): UniverseEntry | undefined {
   const lowerText = text.toLowerCase();
-  return nameLookupPool.find(
-    (entry) =>
-      entry.name.length >= 2 &&
-      matchCandidates(entry.name).some((name) => name.length >= 2 && lowerText.includes(name.toLowerCase()))
-  );
+  return getNameLookupTerms().find(({ term }) => lowerText.includes(term))?.entry;
 }
 
 /**
@@ -557,22 +688,19 @@ export function findAllSymbolsByName(text: string, limit: number): UniverseEntry
   const results: UniverseEntry[] = [];
   const seen = new Set<string>();
   const claimed: Array<[number, number]> = [];
-  for (const entry of nameLookupPool) {
+  // Terms are already sorted longest-first across every entry (see
+  // nameLookupTerms), so a company's shorter alternate spellings are simply
+  // later entries in the same flat list rather than an inner loop — the
+  // longest unclaimed match anywhere in the text always wins.
+  for (const { term, entry } of getNameLookupTerms()) {
     if (results.length >= limit) break;
-    if (entry.name.length < 2 || seen.has(entry.symbol)) continue;
-    let matchedRange: [number, number] | undefined;
-    for (const name of matchCandidates(entry.name)) {
-      if (name.length < 2) continue;
-      const start = lowerText.indexOf(name.toLowerCase());
-      if (start === -1) continue;
-      const end = start + name.length;
-      if (claimed.some(([s, e]) => start < e && end > s)) continue;
-      matchedRange = [start, end];
-      break;
-    }
-    if (!matchedRange) continue;
+    if (seen.has(entry.symbol)) continue;
+    const start = lowerText.indexOf(term);
+    if (start === -1) continue;
+    const end = start + term.length;
+    if (claimed.some(([s, e]) => start < e && end > s)) continue;
     seen.add(entry.symbol);
-    claimed.push(matchedRange);
+    claimed.push([start, end]);
     results.push(entry);
   }
   return results;

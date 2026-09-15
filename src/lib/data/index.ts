@@ -813,3 +813,180 @@ export async function getVolumeSurgeStocks(market: Market): Promise<VolumeSurgeI
       .sort((a, b) => b.streakDays - a.streakDays);
   });
 }
+
+export interface ValueScreenItem {
+  symbol: string;
+  market: Market;
+  name: string;
+  sector: string;
+  price: number;
+  changePercent: number;
+  turnover: number;
+  peRatio?: number;
+  pbRatio?: number;
+  dividendYield?: number;
+}
+
+/** 一次算好幾種「估值/跌幅」面向的全市場篩選結果，見 getValueScreen()。 */
+export interface ValueScreen {
+  lowPe: ValueScreenItem[];
+  highYield: ValueScreenItem[];
+  lowPb: ValueScreenItem[];
+  decliners: ValueScreenItem[];
+}
+
+const VALUE_SCREEN_TTL_MS = 5 * 60_000;
+const VALUE_SCREEN_N = 12;
+// 流動性下限：本益比/殖利率最極端的名次幾乎一定被「幾乎沒有人交易的殭屍股」佔滿
+// （成交金額只有幾萬元的冷門股，本益比 2 倍也買不到、賣不掉），對使用者完全沒有
+// 參考價值，還會讓回答看起來像在亂推薦。用「今日成交金額」當門檻，只保留真的有人
+// 在交易的股票。3000 萬元大約是台股每天成交金額排行的中段，能濾掉極端冷門股又不會
+// 嚴格到只剩權值股。
+const VALUE_SCREEN_MIN_TURNOVER_TWD = 30_000_000;
+
+/**
+ * 全市場「便宜/高息/跌深」篩選。
+ *
+ * 加這個函式的原因跟 getVolumeSurgeStocks 是同一類問題：使用者實測問「有沒有本益比
+ * 低的股票可以推薦？」「殖利率高的股票有哪些？」「今天跌最多的有哪些？有沒有跌深可以
+ * 撿的？」時，AI 回答「資料裡沒有直接提供個股的本益比/殖利率數據」——但本站其實
+ * 早就有全市場的本益比/股價淨值比/殖利率（TWSE 的 BWIBBU_ALL 加上 TPEx 的對應
+ * 端點，見 getFundamentals 用的那份 `fundamentals:TW:all` 快取，一次就涵蓋整個市場），
+ * 只是從來沒有任何地方把它整理成「排行清單」餵給 AI 問答，AI 手上真的沒有這份資料，
+ * 才誠實說沒有。這就是典型的「明明有資料卻答沒有」——不是 AI 在說謊，是資料沒送到。
+ *
+ * 只做台股：美股的基本面是逐檔跟 Yahoo 拿的（fetchUsFundamentals），沒有一次拿到
+ * 全市場的批次端點，硬要掃會變成上百個請求。
+ */
+export async function getValueScreen(market: Market): Promise<ValueScreen> {
+  if (market !== "TW") return { lowPe: [], highYield: [], lowPb: [], decliners: [] };
+  return cached(`value-screen:${market}:v1`, VALUE_SCREEN_TTL_MS, async () => {
+    const [items, fundamentalsMap] = await Promise.all([
+      searchStocks({ market, sortBy: "turnover", sortDir: "desc" }),
+      cachedMap("fundamentals:TW:all", FUNDAMENTALS_TTL_MS, () =>
+        mergeTwMaps(fetchTwseFundamentalsAll, fetchTpexFundamentalsAll)
+      ),
+    ]);
+
+    const liquid = items.filter((i) => i.turnover >= VALUE_SCREEN_MIN_TURNOVER_TWD);
+    const enriched: ValueScreenItem[] = liquid.map((i) => {
+      const f = fundamentalsMap.get(i.symbol);
+      return {
+        symbol: i.symbol,
+        market: i.market,
+        name: i.name,
+        sector: i.sector,
+        price: i.price,
+        changePercent: i.changePercent,
+        turnover: i.turnover,
+        peRatio: f?.peRatio,
+        pbRatio: f?.pbRatio,
+        dividendYield: f?.dividendYield,
+      };
+    });
+
+    const byPe = enriched
+      .filter((i) => i.peRatio != null && i.peRatio > 0)
+      .sort((a, b) => a.peRatio! - b.peRatio!)
+      .slice(0, VALUE_SCREEN_N);
+    const byYield = enriched
+      .filter((i) => i.dividendYield != null && i.dividendYield > 0)
+      .sort((a, b) => b.dividendYield! - a.dividendYield!)
+      .slice(0, VALUE_SCREEN_N);
+    const byPb = enriched
+      .filter((i) => i.pbRatio != null && i.pbRatio > 0)
+      .sort((a, b) => a.pbRatio! - b.pbRatio!)
+      .slice(0, VALUE_SCREEN_N);
+    // 跌幅榜刻意不套流動性門檻以外的條件：使用者問「今天跌最多的」就是要看真實的
+    // 跌幅排行，不是我們挑過的「跌得有道理的」。
+    const decliners = enriched
+      .filter((i) => i.changePercent < 0)
+      .sort((a, b) => a.changePercent - b.changePercent)
+      .slice(0, VALUE_SCREEN_N);
+
+    return { lowPe: byPe, highYield: byYield, lowPb: byPb, decliners };
+  });
+}
+
+export interface ChipsRankingItem {
+  symbol: string;
+  market: Market;
+  name: string;
+  price: number;
+  changePercent: number;
+  netShares: number;
+}
+
+/** 全市場三大法人/外資買賣超排行，見 getChipsRanking()。 */
+export interface ChipsRanking {
+  institutionalBuy: ChipsRankingItem[];
+  institutionalSell: ChipsRankingItem[];
+  foreignBuy: ChipsRankingItem[];
+  foreignSell: ChipsRankingItem[];
+  trustBuy: ChipsRankingItem[];
+}
+
+const CHIPS_RANKING_TTL_MS = 5 * 60_000;
+const CHIPS_RANKING_N = 10;
+
+/**
+ * 全市場「三大法人/外資/投信買賣超排行」。
+ *
+ * 跟 getValueScreen 同一個成因：使用者問「三大法人今天在買什麼？」「今天外資買超最多的
+ * 是哪幾檔？」時，AI 只能從「技術訊號共振股」那 12 檔（先天只取當日漲跌幅最大的前 15 檔
+ * 當候選）附帶的籌碼欄位裡挑，於是把幾檔剛好爆量漲停的小型股講成「法人today在買的股票」，
+ * 或老實回答「資料裡沒有特別列出外資買超最多的幾檔」。但 getChips 底下那兩份
+ * `chips:TW:institutional` / `chips:TW:margin` 快取本來就是**全市場**的對照表（TWSE 加
+ * TPEx 每個交易日的完整三大法人買賣超），要排行只是排序而已，不需要任何新的資料源。
+ *
+ * 只做台股：美股沒有對應的公開籌碼資料源（getChips 對美股一律回傳 null）。
+ */
+export async function getChipsRanking(market: Market): Promise<ChipsRanking> {
+  const empty: ChipsRanking = {
+    institutionalBuy: [],
+    institutionalSell: [],
+    foreignBuy: [],
+    foreignSell: [],
+    trustBuy: [],
+  };
+  if (market !== "TW") return empty;
+  return cached(`chips-ranking:${market}:v1`, CHIPS_RANKING_TTL_MS, async () => {
+    const [items, institutionalMap] = await Promise.all([
+      searchStocks({ market, sortBy: "turnover", sortDir: "desc" }),
+      cachedMap("chips:TW:institutional", CHIPS_TTL_MS, () =>
+        mergeTwMaps(fetchTwseInstitutionalTradingAll, fetchTpexInstitutionalTradingAll)
+      ),
+    ]);
+
+    // 排行只涵蓋「站上有即時報價的股票」，這樣每一筆都能附上現價與今日漲跌幅，
+    // 不會出現只有買賣超股數、沒有價格的半套資料。
+    const rows = items
+      .map((i) => ({ item: i, chips: institutionalMap.get(i.symbol) }))
+      .filter((r): r is { item: (typeof items)[number]; chips: Chips } => r.chips != null);
+
+    const rank = (pick: (c: Chips) => number | undefined, dir: "buy" | "sell"): ChipsRankingItem[] =>
+      rows
+        .map((r) => ({ r, net: pick(r.chips) }))
+        .filter((x): x is { r: (typeof rows)[number]; net: number } =>
+          x.net != null && (dir === "buy" ? x.net > 0 : x.net < 0)
+        )
+        .sort((a, b) => (dir === "buy" ? b.net - a.net : a.net - b.net))
+        .slice(0, CHIPS_RANKING_N)
+        .map(({ r, net }) => ({
+          symbol: r.item.symbol,
+          market: r.item.market,
+          name: r.item.name,
+          price: r.item.price,
+          changePercent: r.item.changePercent,
+          netShares: net,
+        }));
+
+    return {
+      institutionalBuy: rank((c) => c.institutionalNetShares, "buy"),
+      institutionalSell: rank((c) => c.institutionalNetShares, "sell"),
+      foreignBuy: rank((c) => c.foreignNetShares, "buy"),
+      foreignSell: rank((c) => c.foreignNetShares, "sell"),
+      trustBuy: rank((c) => c.trustNetShares, "buy"),
+    };
+  });
+}
