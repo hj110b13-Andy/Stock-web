@@ -6,9 +6,10 @@ import WatchlistButton from "@/components/WatchlistButton";
 import FundamentalsCard from "@/components/FundamentalsCard";
 import EarningsCard from "@/components/EarningsCard";
 import ChipsCard from "@/components/ChipsCard";
+import MarketDepthCard from "@/components/MarketDepthCard";
 import LiveQuoteHeader from "@/components/LiveQuoteHeader";
 import PriceAlertForm from "@/components/PriceAlertForm";
-import { getQuote, getFundamentals, getEarnings, getChips, getMaterialAnnouncements, detectMarket, normalizeSymbol } from "@/lib/data";
+import { getQuote, getFundamentals, getEarnings, getChips, getMarketDepth, getMaterialAnnouncements, detectMarket, normalizeSymbol } from "@/lib/data";
 import type { Market } from "@/lib/data";
 import { formatPercent, formatPrice } from "@/lib/format";
 
@@ -56,11 +57,12 @@ export default async function StockDetailPage({ params, searchParams }: PageProp
   if (!symbol) notFound();
 
   const marketHint = market === "TW" || market === "US" ? (market as Market) : undefined;
-  const [quote, fundamentals, earnings, chips, announcements] = await Promise.all([
+  const [quote, fundamentals, earnings, chips, marketDepth, announcements] = await Promise.all([
     getQuote(symbol, marketHint),
     getFundamentals(symbol, marketHint),
     getEarnings(symbol, marketHint),
     getChips(symbol, marketHint),
+    getMarketDepth(symbol, marketHint),
     getMaterialAnnouncements(symbol, marketHint),
   ]);
 
@@ -101,6 +103,8 @@ export default async function StockDetailPage({ params, searchParams }: PageProp
       <FundamentalsCard fundamentals={fundamentals} currency={quote.currency} />
 
       <EarningsCard earnings={earnings} currency={quote.currency} />
+
+      {quote.market === "TW" && <MarketDepthCard depth={marketDepth} />}
 
       {quote.market === "TW" && <ChipsCard chips={chips} announcements={announcements} />}
 

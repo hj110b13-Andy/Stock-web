@@ -24,6 +24,7 @@ import {
   fetchTpexQuotesBatch,
 } from "./tpex";
 import { fetchUsCandles, fetchUsEarnings, fetchUsFundamentals, fetchUsQuote, fetchUsQuotesBatch, fetchYahooIntradayCandles } from "./us";
+import { fetchYahooTwMarketDepth, type MarketDepth } from "./yahooTwMarketDepth";
 import { fetchTaifexNightFutures } from "./taifex";
 import type { TaifexFuturesQuote } from "./types";
 import { computeSignals, type Signal } from "@/lib/signals";
@@ -31,6 +32,7 @@ import { backfillVolumeHistoryFromCandles, computeVolumeMetrics, getTrailingAver
 import type { VolumeTrend } from "./types";
 
 export * from "./types";
+export type { MarketDepth } from "./yahooTwMarketDepth";
 export { sectorsFor, getTwUniverse, findSymbolByName, findAllSymbolsByName, findInUniverse } from "./universe";
 export { describeTaifexNightFutures } from "./taifex";
 
@@ -309,6 +311,30 @@ export async function getChips(symbolInput: string, marketHint?: Market): Promis
   } catch {
     return null;
   }
+}
+
+// A single call here is a full ~370KB HTML page fetch (see
+// yahooTwMarketDepth.ts) — genuinely heavier than a normal quote request, so
+// this gets a longer TTL than QUOTE_TTL_MS's 20s to avoid re-paying that
+// cost on every quick re-render of a stock page someone is actively
+// watching. 60s still means "內外盤" catches up within a minute of a real
+// swing in buy/sell-side pressure, which is what this figure is for.
+const MARKET_DEPTH_TTL_MS = 60_000;
+
+/**
+ * TW only（內外盤）— 見 yahooTwMarketDepth.ts 的完整說明：這份資料只有
+ * Yahoo 台灣在地化網頁有，且只能整頁抓取，所以只適合這種「使用者正在看
+ * 這一檔股票」的單次查詢，故意沒有比照 getChips() 做成「整個市場一次回傳
+ * 再查表」的批次模式（那份資料源本身就不支援批次查詢）。抓不到時回傳
+ * null，不是抓取失敗就丟錯，個股頁面顯示「資料暫缺」即可。
+ */
+export async function getMarketDepth(symbolInput: string, marketHint?: Market): Promise<MarketDepth | null> {
+  const symbol = normalizeSymbol(symbolInput);
+  const market = marketHint ?? detectMarket(symbol);
+  if (market !== "TW") return null;
+  return cached(`market-depth:${symbol}`, MARKET_DEPTH_TTL_MS, () =>
+    fetchYahooTwMarketDepth(symbol, resolveTwExchange(symbol))
+  );
 }
 
 const ANNOUNCEMENTS_TTL_MS = 5 * 60_000; // 全站統一 5 分鐘更新標準，見 FUNDAMENTALS_TTL_MS 說明
