@@ -142,12 +142,15 @@ html {
      time, with the chat widget's own box separately pinned to a fixed px
      size (see ChatWidget.tsx) so it no longer grows/shrinks with this value
      at all. With that fix in place the original blocker for 112.5% no
-     longer applies, and the user asked for another step up — bumped back
-     to 112.5% and re-checked homepage/individual-stock-page/search at both
-     a mobile (390px) and desktop width for clipping/overflow before keeping
-     it; the only remaining side effect is the expected one (a bit less
-     content per screen before scrolling), not breakage. */
-  font-size: 112.5%;
+     longer applies, and it was bumped back to 112.5%, then to 118.75%
+     (16px -> ~19px) on a further request for a bit more still — re-checked
+     homepage/individual-stock-page/search's multi-filter row (the newest,
+     most cramped row on the site: sector/volume-trend dropdowns + 4 numeric
+     range inputs + sort controls) at both a mobile (390px) and desktop
+     width each time for clipping/overflow before keeping it. The only
+     remaining side effect is the expected one (less content per screen
+     before scrolling), not breakage. */
+  font-size: 118.75%;
 }
 
 body {
