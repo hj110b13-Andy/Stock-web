@@ -105,6 +105,7 @@ export default function StockChart({
   const [range, setRange] = useState<ChartRange>("3m");
   const [candles, setCandles] = useState<Candle[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
   const [indicators, setIndicators] = useState<ChartIndicatorSettings>(DEFAULT_INDICATOR_SETTINGS);
   const [showSettings, setShowSettings] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -147,6 +148,15 @@ export default function StockChart({
 
   useEffect(() => {
     let cancelled = false;
+    // Switching range (especially a heavier one like "10年") could take
+    // several seconds, and candles/error both deliberately keep their
+    // previous values during that wait (jarring to blank the whole chart
+    // for what might resolve in 200ms) — but that meant nothing on screen
+    // changed at all while a slower fetch was in flight, which read as "the
+    // button didn't do anything" rather than "still loading." isLoading
+    // drives a visible overlay for exactly that gap, on top of whichever
+    // chart is still showing.
+    setIsLoading(true);
     fetch(`/api/chart/${encodeURIComponent(symbol)}?range=${range}&market=${market}`)
       .then(async (res) => {
         const data = await res.json().catch(() => null);
@@ -163,6 +173,9 @@ export default function StockChart({
           setCandles(null);
           setError(err.message ?? "圖表資料暫時無法取得");
         }
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false);
       });
     return () => {
       cancelled = true;
@@ -534,6 +547,12 @@ export default function StockChart({
         )}
         {!error && !candles && (
           <div className="absolute inset-0 animate-pulse rounded-md bg-(--page-plane)" />
+        )}
+        {isLoading && candles && (
+          <div className="absolute right-2 top-2 flex items-center gap-1.5 rounded-full border border-(--gridline) bg-(--surface-1) px-2.5 py-1 text-[13px] text-(--text-muted) shadow">
+            <span className="h-3 w-3 animate-spin rounded-full border-2 border-(--text-muted) border-t-transparent" />
+            載入中…
+          </div>
         )}
       </div>
       <p className="mt-2 text-[13px] text-(--text-muted)">將滑鼠移到圖表上可查看該日詳細開高低收與成交量</p>

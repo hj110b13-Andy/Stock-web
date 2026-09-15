@@ -173,8 +173,18 @@ function NewsFeedRow({ item, pinned }: { item: NewsFeedItem; pinned?: boolean })
               — never claimed for the headline-only fallback, which is a
               plain paraphrase of the title and nothing more. */}
           {item.summaryKind === "fulltext" && (
-            <span className="ml-1.5 align-middle text-[12px] font-normal text-(--text-muted)" title="摘要根據文章全文內容，不只是標題">
-              📄全文摘要
+            // A plain inline label styled with an icon read as a clickable
+            // tag to at least one tester ("點擊沒有任何反應") — it isn't
+            // meant to be interactive (see the card-level comment above),
+            // so it's styled as a small pill/badge instead of inline text
+            // to read as a passive label, with cursor-default making that
+            // explicit rather than inheriting a pointer cursor from
+            // anywhere else on the card.
+            <span
+              className="ml-1.5 inline-flex cursor-default select-none items-center gap-0.5 rounded-full bg-(--page-plane) px-1.5 py-0.5 align-middle text-[11px] font-normal text-(--text-muted)"
+              title="摘要根據文章全文內容，不只是標題"
+            >
+              📄 全文摘要
             </span>
           )}
         </p>

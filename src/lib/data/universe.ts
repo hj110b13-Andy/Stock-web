@@ -494,16 +494,38 @@ export function findInUniverse(symbol: string, market?: Market): UniverseEntry |
   return pool.find((e) => e.symbol.toUpperCase() === upper);
 }
 
+// US entries carry full legal names ("Apple Inc.", "Alphabet Inc."), but
+// nobody types the legal suffix when asking about a stock — matching only
+// the literal full name meant "Apple" (or "apple", any case) never matched
+// "Apple Inc." at all, and the AI fell back to only recognizing the bare
+// ticker "AAPL". Stripped names are tried as an additional candidate rather
+// than replacing the full name, so exact full-name matches (rare but
+// possible) still work too.
+const CORP_SUFFIX_PATTERN = /[,.]?\s+(inc|corp|corporation|co|ltd|plc|company|holdings?|group)\.?$/i;
+
+function matchCandidates(name: string): string[] {
+  const stripped = name.replace(CORP_SUFFIX_PATTERN, "").trim();
+  return stripped && stripped !== name ? [name, stripped] : [name];
+}
+
 /**
  * Finds a stock by scanning free-form text for a known company name as a
  * substring (e.g. picks "鴻海" out of "鴻海現在多少錢" or "台積電" out of a
- * longer sentence). Names are checked longest-first so a specific match
- * (e.g. "台積電") wins over any shorter name that happens to also be a
- * substring of the text. Used to ground the AI chat when a user types a
- * company name instead of a ticker/code.
+ * longer sentence, or "Apple"/"apple" out of "Apple現在股價多少" via
+ * matchCandidates above). Names are checked longest-first so a specific
+ * match (e.g. "台積電") wins over any shorter name that happens to also be a
+ * substring of the text. Comparison is case-insensitive throughout (matters
+ * for English names only — lowercasing Chinese text is a no-op). Used to
+ * ground the AI chat when a user types a company name instead of a
+ * ticker/code.
  */
 export function findSymbolByName(text: string): UniverseEntry | undefined {
-  return nameLookupPool.find((entry) => entry.name.length >= 2 && text.includes(entry.name));
+  const lowerText = text.toLowerCase();
+  return nameLookupPool.find(
+    (entry) =>
+      entry.name.length >= 2 &&
+      matchCandidates(entry.name).some((name) => name.length >= 2 && lowerText.includes(name.toLowerCase()))
+  );
 }
 
 /**
@@ -525,18 +547,26 @@ export function findSymbolByName(text: string): UniverseEntry | undefined {
  * that this doesn't try to handle it specially.
  */
 export function findAllSymbolsByName(text: string, limit: number): UniverseEntry[] {
+  const lowerText = text.toLowerCase();
   const results: UniverseEntry[] = [];
   const seen = new Set<string>();
   const claimed: Array<[number, number]> = [];
   for (const entry of nameLookupPool) {
     if (results.length >= limit) break;
     if (entry.name.length < 2 || seen.has(entry.symbol)) continue;
-    const start = text.indexOf(entry.name);
-    if (start === -1) continue;
-    const end = start + entry.name.length;
-    if (claimed.some(([s, e]) => start < e && end > s)) continue;
+    let matchedRange: [number, number] | undefined;
+    for (const name of matchCandidates(entry.name)) {
+      if (name.length < 2) continue;
+      const start = lowerText.indexOf(name.toLowerCase());
+      if (start === -1) continue;
+      const end = start + name.length;
+      if (claimed.some(([s, e]) => start < e && end > s)) continue;
+      matchedRange = [start, end];
+      break;
+    }
+    if (!matchedRange) continue;
     seen.add(entry.symbol);
-    claimed.push([start, end]);
+    claimed.push(matchedRange);
     results.push(entry);
   }
   return results;

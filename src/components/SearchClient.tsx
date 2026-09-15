@@ -311,7 +311,14 @@ function SectorMultiSelect({
       <summary className="cursor-pointer list-none rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1 text-xs">
         產業{selected.length > 0 ? `（已選 ${selected.length}）` : "：全部"}
       </summary>
-      <div className="absolute right-0 z-20 mt-1 max-h-64 w-48 overflow-y-auto rounded-md border border-(--gridline) bg-(--surface-1) p-2 shadow-lg">
+      {/* left-0, not right-0: this is the first (leftmost-in-DOM-order) control
+          in a `justify-end` flex-wrap row, so it sits close to the row's own
+          left edge — anchoring the dropdown's right edge here (right-0) let a
+          192px-wide menu extend left past the viewport on first open (measured
+          left: -61.5px at a normal 894px desktop width, not just on mobile).
+          Anchoring from the left edge instead only ever extends rightward,
+          where this row actually has room. */}
+      <div className="absolute left-0 z-20 mt-1 max-h-64 w-48 overflow-y-auto rounded-md border border-(--gridline) bg-(--surface-1) p-2 shadow-lg">
         <div className="mb-1 flex items-center justify-between">
           <span className="text-[13px] text-(--text-muted)">多選產業</span>
           <button onClick={onClear} className="text-[13px] text-(--accent) hover:underline">
