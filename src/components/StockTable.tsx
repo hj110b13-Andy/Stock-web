@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { SearchItem } from "@/lib/data";
-import { formatMarketCap, formatPercent, formatPrice, formatVolume, priceDirectionClass } from "@/lib/format";
+import { formatPercent, formatPrice, formatTurnover, formatVolume, priceDirectionClass } from "@/lib/format";
 import WatchlistButton from "./WatchlistButton";
 
 export default function StockTable({ items, emptyLabel }: { items: SearchItem[]; emptyLabel?: string }) {
@@ -62,7 +62,7 @@ export default function StockTable({ items, emptyLabel }: { items: SearchItem[];
                 )}
               </td>
               <td className="py-2.5 pr-4 text-right tabular-nums text-(--text-secondary)">
-                {formatMarketCap(item.turnover, item.market === "TW" ? "TWD" : "USD")}
+                {formatTurnover(item.turnover, item.market)}
               </td>
             </tr>
           ))}

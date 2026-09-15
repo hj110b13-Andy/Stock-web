@@ -41,6 +41,23 @@ export function formatMarketCap(value: number, currency: string): string {
 }
 
 /**
+ * Same "each market keeps its own real-world reading convention" split as
+ * formatVolume() above — a user asked for 成交金額 to use Chinese units
+ * (萬/億) rather than the English T/B/M abbreviation formatMarketCap uses.
+ * 億/萬 is the actual local convention for TWD-denominated figures (every TW
+ * site — TWSE itself, Yahoo奇摩股市, MoneyDJ — reports 成交金額 this way),
+ * but isn't how USD amounts get reported even on Chinese-language coverage
+ * of the US market (still "億" would be an unfamiliar unit tied to
+ * NT$/RMB-scale reporting) — so US stays on formatMarketCap's T/B/M.
+ */
+export function formatTurnover(value: number, market: "TW" | "US"): string {
+  if (market !== "TW") return formatMarketCap(value, "USD");
+  if (value >= 100_000_000) return `${(value / 100_000_000).toFixed(2)}億`;
+  if (value >= 10_000) return `${(value / 10_000).toFixed(1)}萬`;
+  return value.toLocaleString("zh-TW");
+}
+
+/**
  * Formats an ISO timestamp as Taipei wall-clock time (`YYYY/MM/DD HH:mm:ss`),
  * computed via fixed UTC+8 offset arithmetic rather than
  * `toLocaleString(..., { timeZone: "Asia/Taipei" })`. That Intl call reads
