@@ -45,7 +45,14 @@
   --color-highlight-bg: var(--highlight-bg);
   --color-price-up: var(--price-up);
   --color-price-down: var(--price-down);
-  --font-sans: system-ui, -apple-system, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
+  /* "Noto Sans TC" (loaded via <link> in layout.tsx) first: a user reported
+     the previous system-font stack reading too thin/faint on a TV viewed
+     from across a room. Noto Sans TC is an even-stroke-width, high-x-height
+     design built for exactly that kind of at-a-glance/signage legibility,
+     unlike Segoe UI/PingFang TC's thinner, more contrast-y letterforms —
+     the system stack stays as the fallback for the (network-failure) case
+     the <link> doesn't load in time. */
+  --font-sans: "Noto Sans TC", system-ui, -apple-system, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -166,4 +173,13 @@ body {
 
 .tabular-nums {
   font-variant-numeric: tabular-nums;
+  /* Numbers (prices, %, volumes) are the content this whole site exists to
+     convey at a glance — bumped a step heavier than the page's already-
+     raised 500 baseline (see body{} above) for exactly the same
+     TV-distance-legibility reason, since these are the figures a viewer
+     across the room is actually trying to read. 700 matches one of the
+     weights actually loaded for Noto Sans TC (see the <link> in
+     layout.tsx), so this is a real heavier face, not a synthesized/faux
+     bold. */
+  font-weight: 700;
 }

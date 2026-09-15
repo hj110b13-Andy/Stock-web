@@ -62,6 +62,34 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="zh-Hant" className="h-full antialiased" suppressHydrationWarning>
       <head>
+        {/* A user reported the previous system-font stack (Segoe UI/PingFang
+            TC/等) reading as too thin/faint when the site is viewed on a TV
+            from across a room — a real, separate problem from plain text
+            size (already bumped once in globals.css) or weight (already
+            bumped to 500 there too): those system fonts are all fairly
+            high-contrast, thin-stroke designs that lose definition at
+            distance/on a display's soft anti-aliasing, no matter how large
+            or bold they're set. Noto Sans TC is a large, geometric,
+            even-stroke-width sans-serif purpose-built for exactly this kind
+            of at-a-glance/signage-style legibility, with full Traditional
+            Chinese coverage — used here at up to weight 900 (see globals.css)
+            for headings/prices specifically because that's where distance
+            legibility matters most. Loaded via a plain <link> (not
+            next/font/google's self-hosting) because Google's CSS2 endpoint
+            already splits a CJK family's huge glyph set into many small
+            unicode-range subset files and serves whichever the browser
+            actually needs — reimplementing that split reliably through
+            next/font's build-time fetch is more fragile for a family this
+            large than accepting the one external request. Weight bumped
+            further too (see globals.css) — 700 for numbers/prices
+            specifically, the content this site's whole point is to convey
+            at a glance. */}
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        <link
+          rel="stylesheet"
+          href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap"
+        />
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
       </head>
       <body className="min-h-full flex flex-col bg-(--page-plane) text-(--text-primary)">

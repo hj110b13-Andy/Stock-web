@@ -290,11 +290,25 @@ async function guessSymbolsFromText(text: string): Promise<{ symbol: string; mar
 
   const seen = new Set<string>();
   const candidates: Array<{ symbol: string; market: Market; index: number }> = [];
+  // A company name already matched (e.g. "apple" -> AAPL via "Apple Inc.")
+  // can ALSO look like a valid ticker once the whole text is uppercased —
+  // "apple".toUpperCase() is "APPLE", which the ticker regex below happily
+  // accepts (5 letters, not a stopword) as a second, bogus candidate
+  // distinct from AAPL (seen tracks resolved *symbols*, so "APPLE" the
+  // literal string was never excluded). That produced a real, reproducible
+  // answer where the model treated the same word as two different unknown
+  // stocks — "另一檔『APPLE』不在本站美股精選範圍內" tacked onto an
+  // otherwise-correct AAPL answer. Every name variant actually matched
+  // (including the corp-suffix-stripped ones findAllSymbolsByName tries) is
+  // recorded here so the ticker scan can skip re-claiming text that's
+  // already spoken for by a name match.
+  const matchedNameSubstrings: string[] = [];
 
   for (const entry of findAllSymbolsByName(text, MAX_COMPARE_TARGETS * 2)) {
     if (seen.has(entry.symbol)) continue;
     seen.add(entry.symbol);
     candidates.push({ symbol: entry.symbol, market: entry.market, index: text.indexOf(entry.name) });
+    matchedNameSubstrings.push(entry.name.toLowerCase());
   }
 
   // Numeric codes/tickers are checked too (not just names) and merged by
@@ -309,7 +323,11 @@ async function guessSymbolsFromText(text: string): Promise<{ symbol: string; mar
       if (/^\d{4,6}$/.test(m)) {
         seen.add(m);
         candidates.push({ symbol: m, market: "TW", index: upper.indexOf(m) });
-      } else if (!STOPWORDS.has(m) && /^[A-Z]{1,5}$/.test(m)) {
+      } else if (
+        !STOPWORDS.has(m) &&
+        /^[A-Z]{1,5}$/.test(m) &&
+        !matchedNameSubstrings.some((name) => name.includes(m.toLowerCase()))
+      ) {
         seen.add(m);
         candidates.push({ symbol: m, market: "US", index: upper.indexOf(m) });
       }
