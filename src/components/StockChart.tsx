@@ -548,8 +548,14 @@ export default function StockChart({
         {!error && !candles && (
           <div className="absolute inset-0 animate-pulse rounded-md bg-(--page-plane)" />
         )}
+        {/* z-20 on the pill below: without an explicit z-index it paints at
+            `auto`, and lightweight-charts' price-axis canvas (inside the
+            sibling `absolute inset-0` container) wins the painting order and
+            draws its scale labels straight over the "載入中…" text — reproduced
+            on /stock/1717, where the 85.00 label sits exactly at the pill's
+            row. z-20 also clears the z-10 crosshair tooltip in the same box. */}
         {isLoading && candles && (
-          <div className="absolute right-2 top-2 flex items-center gap-1.5 rounded-full border border-(--gridline) bg-(--surface-1) px-2.5 py-1 text-[13px] text-(--text-muted) shadow">
+          <div className="absolute right-2 top-2 z-20 flex items-center gap-1.5 rounded-full border border-(--gridline) bg-(--surface-1) px-2.5 py-1 text-[13px] text-(--text-muted) shadow">
             <span className="h-3 w-3 animate-spin rounded-full border-2 border-(--text-muted) border-t-transparent" />
             載入中…
           </div>
