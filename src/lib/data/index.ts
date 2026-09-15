@@ -148,14 +148,33 @@ export async function getQuote(symbolInput: string, marketHint?: Market): Promis
  * returns the current snapshot, not a same-day series), so "today" is
  * routed through Yahoo for TW too, via the same ticker-suffix convention
  * Yahoo itself uses on its own site (`.TW` for TWSE, `.TWO` for TPEx) —
- * confirmed live that both work. Defaults to `.TW` when the exchange isn't
- * resolvable (a symbol not yet in the universe) since TWSE is the common
- * case; the fetch simply fails (surfaced as "no chart data", not a
- * fabricated result) if that guess is wrong for a given symbol.
+ * confirmed live that both work, and that guessing wrong 404s outright
+ * (Yahoo does not fall back on its own).
+ *
+ * Tries the exchange resolveTwExchange() reports first, but always falls
+ * back to the other suffix on failure rather than trusting that lookup
+ * outright — confirmed live this matters: a cold serverless instance that
+ * hasn't yet run getTwUniverse() (getChart() doesn't await it the way e.g.
+ * ai/ask.ts's guessSymbolsFromText() explicitly does) sees an unresolved
+ * exchange for a real TPEx symbol and guessed `.TW`, which 404s outright
+ * for a code that only exists on TPEx (real repro: 6811/宏碁資訊). Same
+ * try-the-likely-one-then-the-other resilience fetchTwQuote()/fetchTwChart()
+ * already use for their own TWSE/TPEx split, just expressed as two Yahoo
+ * suffixes instead of two different upstream hosts.
  */
-function toYahooSymbol(symbol: string, market: Market): string {
-  if (market !== "TW") return symbol;
-  return resolveTwExchange(symbol) === "TPEx" ? `${symbol}.TWO` : `${symbol}.TW`;
+async function fetchTwIntradayCandles(symbol: string): Promise<Candle[]> {
+  const exchange = resolveTwExchange(symbol);
+  const first = exchange === "TPEx" ? "TWO" : "TW";
+  const second = first === "TW" ? "TWO" : "TW";
+  try {
+    return await fetchYahooIntradayCandles(`${symbol}.${first}`);
+  } catch (err) {
+    try {
+      return await fetchYahooIntradayCandles(`${symbol}.${second}`);
+    } catch {
+      throw err;
+    }
+  }
 }
 
 /** Returns null when the live source can't be reached; never fabricated candles. */
@@ -171,7 +190,9 @@ export async function getChart(
     try {
       const candles =
         range === "today"
-          ? await fetchYahooIntradayCandles(toYahooSymbol(symbol, market))
+          ? market === "TW"
+            ? await fetchTwIntradayCandles(symbol)
+            : await fetchYahooIntradayCandles(symbol)
           : market === "TW"
             ? await fetchTwChart(symbol, range)
             : await fetchUsCandles(symbol, range);
