@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ASK_ABOUT_EVENT, type AskAboutDetail } from "@/lib/chatEvents";
 import { getWatchlist } from "@/lib/watchlist";
 import MarkdownLite from "./MarkdownLite";
@@ -53,7 +53,9 @@ const VOICE_ERROR_MESSAGES: Record<string, string> = {
   "no-speech": "沒有偵測到聲音，請再靠近一點、慢慢說一次。",
   "audio-capture": "找不到麥克風，請確認裝置有連接麥克風。",
   network: "網路連線有問題，請稍後再試一次。",
-  aborted: "語音輸入已取消。",
+  // 注意：刻意不收錄 "aborted"。使用者自己按下停止鈕、或關閉對話面板時，瀏覽器就會
+  // 發出 aborted，那是「照使用者的意思取消」而不是出錯，用紅色 ⚠️ 警告去講只會讓人
+  // 以為自己弄壞了什麼。aborted 在 onerror 裡單獨處理成「不顯示任何訊息」。
 };
 
 export default function ChatWidget() {
@@ -82,13 +84,43 @@ export default function ChatWidget() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, loading]);
 
+  // 徹底收掉目前這個語音辨識實例：先把 callback 拆掉再 stop()。
+  // 拆 callback 是必要的——stop() 之後瀏覽器仍會非同步補發一次 onend，如果那時
+  // 使用者已經重新開始了新一輪辨識，殘留的 onend 會把新一輪的 listening 狀態誤關掉。
+  const teardownRecognition = useCallback(() => {
+    const recognition = recognitionRef.current;
+    recognitionRef.current = null;
+    if (!recognition) return;
+    recognition.onresult = null;
+    recognition.onerror = null;
+    recognition.onend = null;
+    try {
+      recognition.stop();
+    } catch {
+      // 尚未開始/已經結束的實例呼叫 stop() 不該讓整個元件炸掉，忽略即可。
+    }
+  }, []);
+
   // 元件卸載時務必停止語音辨識，避免瀏覽器繼續在背景錄音、造成資源浪費或殘留的
   // onresult/onend callback 觸發已經不存在的 state setter。
   useEffect(() => {
     return () => {
-      recognitionRef.current?.stop();
+      teardownRecognition();
     };
-  }, []);
+  }, [teardownRecognition]);
+
+  // 關閉對話面板時也要停止錄音。這個元件掛在 root layout 裡常駐，關閉面板只是把
+  // `open` 設成 false、元件本身從來不會卸載，所以上面那個「卸載時停止」的 cleanup
+  // 在實際操作中根本不會被觸發——實測（規則三複查）確認：在「聆聽中」直接按 ✕ 關掉
+  // 面板，瀏覽器會繼續開著麥克風錄音，分頁的錄音指示燈一直亮著，而且 listening 狀態
+  // 卡住，重新打開面板還顯示「🎤 聆聽中…請說話」。對長輩來說「關掉視窗＝結束」是
+  // 最直覺的收場方式，不能讓麥克風默默留在開啟狀態。
+  useEffect(() => {
+    if (open) return;
+    teardownRecognition();
+    setListening(false);
+    setVoiceError(null);
+  }, [open, teardownRecognition]);
 
   function toggleVoiceInput() {
     if (listening) {
@@ -104,6 +136,9 @@ export default function ChatWidget() {
     }
 
     setVoiceError(null);
+    // 保險：開始新一輪之前，先把任何殘留的舊實例收乾淨（例如上一輪的 onend 因為
+    // 瀏覽器分頁被切到背景而遲遲沒送達），避免兩個實例同時握著麥克風。
+    teardownRecognition();
     const recognition = new SpeechRecognitionCtor();
     recognition.lang = "zh-TW";
     recognition.continuous = false;
@@ -114,12 +149,24 @@ export default function ChatWidget() {
       const transcript = event.results[0]?.[0]?.transcript?.trim();
       if (transcript) {
         // 只填入輸入框、不自動送出——語音辨識偶爾會有錯字，讓使用者先看過再按送出。
-        setInput(transcript);
+        // 接在既有文字後面而不是整個蓋掉：輸入框裡原本就可能有東西——使用者自己打到
+        // 一半改用講的，或是從個股頁按「問 AI 關於 X」帶進來的預填問句——直接覆蓋會
+        // 把那些內容無聲無息地清掉。手機內建鍵盤的語音輸入也是插入而非清空，接在後面
+        // 比較符合使用者既有的習慣。
+        setInput((prev) => {
+          const base = prev.trim();
+          return base ? `${base} ${transcript}` : transcript;
+        });
       }
     };
     recognition.onerror = (event) => {
-      setVoiceError(VOICE_ERROR_MESSAGES[event.error] ?? "語音辨識發生錯誤，請再試一次或改用輸入文字。");
       setListening(false);
+      if (event.error === "aborted") {
+        // 使用者自己喊停（按停止鈕或關閉面板），不是錯誤，不要跳紅字嚇人。
+        setVoiceError(null);
+        return;
+      }
+      setVoiceError(VOICE_ERROR_MESSAGES[event.error] ?? "語音辨識發生錯誤，請再試一次或改用輸入文字。");
     };
     recognition.onend = () => {
       setListening(false);
@@ -141,6 +188,8 @@ export default function ChatWidget() {
     const history = messages.map((m) => ({ role: m.role, content: m.text }));
     setMessages((m) => [...m, { role: "user", text: trimmed }]);
     setInput("");
+    // 問題已經送出了，上一輪的語音錯誤提示沒有必要再留在畫面上。
+    setVoiceError(null);
     setLoading(true);
     try {
       const res = await fetch("/api/ask", {
@@ -271,7 +320,12 @@ export default function ChatWidget() {
             >
               <input
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
+                onChange={(e) => {
+                  setInput(e.target.value);
+                  // 使用者已經改用打字了，上一次的語音錯誤紅字就該退場——否則
+                  // 「沒有偵測到聲音」會一直掛在輸入框上方，看起來像是打的字有問題。
+                  if (voiceError) setVoiceError(null);
+                }}
                 placeholder="輸入你的問題，或按🎤說話…"
                 maxLength={500}
                 className="min-w-0 flex-1 rounded-md border border-(--gridline) bg-(--surface-2) px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-(--accent)"
