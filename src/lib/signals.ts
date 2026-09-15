@@ -41,6 +41,27 @@ function computeMaAlignment(candles: Candle[]): "bullish" | "bearish" | null {
 }
 
 /**
+ * 從最新一根K棒往回數，連續同方向（上漲或下跌）的天數——回傳「任何長度」
+ * （包含0、1、2天），不像 computeSignals 裡的「連漲/跌」訊號只在 >=3 天才
+ * 顯示。獨立匯出這個函式是因為 AI 問答需要誠實回答「剛漲一天」「連漲兩天」
+ * 這類問法，如果只能拿到 computeSignals 篩選過、門檻 3 天以上才會出現的
+ * 訊號，天生就沒辦法回答門檻以下的天數，會被誤判成「沒有資料」。
+ */
+export function computeStreak(candles: Candle[]): { days: number; direction: "up" | "down" | null } {
+  let days = 0;
+  let direction: "up" | "down" | null = null;
+  for (let i = candles.length - 1; i > 0; i--) {
+    const change = candles[i].close - candles[i - 1].close;
+    const dir = change > 0 ? "up" : change < 0 ? "down" : null;
+    if (dir === null) break;
+    if (direction === null) direction = dir;
+    if (dir !== direction) break;
+    days++;
+  }
+  return { days, direction };
+}
+
+/**
  * Purely descriptive, objective technical signals computed from OHLCV data
  * already on the page — no recommendation, no "buy/sell" language. Each
  * signal states an observable fact (volume vs its own average, price vs its
@@ -88,16 +109,7 @@ export function computeSignals(candles: Candle[], currentPrice: number, range: C
   else if (maAlignment === "bearish") signals.push({ label: "均線空頭排列（5日線在10日線、10日線在20日線之下）", tone: "down" });
 
   // Consecutive up/down days (from the most recent bar backwards).
-  let streak = 0;
-  let direction: "up" | "down" | null = null;
-  for (let i = candles.length - 1; i > 0; i--) {
-    const change = candles[i].close - candles[i - 1].close;
-    const dir = change > 0 ? "up" : change < 0 ? "down" : null;
-    if (dir === null) break;
-    if (direction === null) direction = dir;
-    if (dir !== direction) break;
-    streak++;
-  }
+  const { days: streak, direction } = computeStreak(candles);
   if (streak >= 3 && direction) {
     signals.push({ label: `連${direction === "up" ? "漲" : "跌"} ${streak} 天`, tone: direction });
   }
