@@ -58,6 +58,9 @@ export default function LiveMoversBoard({ market, initialItems }: { market: Mark
         {status === "closed" && (
           <p className="text-xs text-(--text-muted)">非交易時段，以下為最近一次收盤資訊</p>
         )}
+        {status === "pre-market" && (
+          <p className="text-xs text-(--text-muted)">08:30-09:00試搓時段，以下為昨日收盤資訊，尚未反映今日試搓價</p>
+        )}
       </div>
       <StockTable items={items} />
     </div>

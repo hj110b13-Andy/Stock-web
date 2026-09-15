@@ -64,6 +64,7 @@ export default function LiveQuoteHeader({ initialQuote }: { initialQuote: Quote 
         更新時間：{formatTaipeiDateTime(quote.updatedAt)}（台北時間）· 幣別{" "}
         {quote.currency}
         {status === "closed" && "（非交易時段，顯示最近一次收盤資訊）"}
+        {status === "pre-market" && "（08:30-09:00試搓時段，尚未正式開盤，以下數字僅供參考）"}
       </p>
 
       <dl className="mt-6 grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">

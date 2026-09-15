@@ -42,6 +42,9 @@ export default async function HighlightsPage() {
             美股 <MarketStatusBadge status={usStatus} />
           </span>
           {(twStatus === "closed" || usStatus === "closed") && <span>非交易時段的市場，榜單為最近一次收盤資訊</span>}
+          {(twStatus === "pre-market" || usStatus === "pre-market") && (
+            <span>08:30-09:00試搓時段的市場，榜單尚未反映今日試搓價</span>
+          )}
         </div>
       </div>
 
