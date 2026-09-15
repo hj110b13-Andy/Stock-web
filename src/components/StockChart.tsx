@@ -233,7 +233,14 @@ export default function StockChart({
         horzLines: { color: palette.gridline },
       },
       rightPriceScale: { borderColor: palette.gridline },
-      timeScale: { borderColor: palette.gridline },
+      // timeVisible: without it, lightweight-charts' default axis formatter
+      // is date-oriented and — fed a whole day's worth of same-day
+      // timestamps — just prints the same "15日" (today's date) under every
+      // tick, telling a viewer nothing about *when* within the day each
+      // point is. Scoped to isIntraday only: the daily ranges' ticks are
+      // already dates, and showing a time-of-day on those would be
+      // meaningless (every daily candle's "time" is midnight).
+      timeScale: { borderColor: palette.gridline, timeVisible: isIntraday, secondsVisible: false },
       autoSize: true,
     });
 
