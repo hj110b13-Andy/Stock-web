@@ -76,6 +76,7 @@ export default function WatchlistSection() {
               price: q.price,
               changePercent: q.changePercent,
               volume: q.volume,
+              turnover: q.price * q.volume,
               // This view fetches one quote at a time (/api/quote/[symbol]),
               // not the batched search list that has the trailing-average
               // volume map alongside it (see lib/data/volumeHistory.ts) — so

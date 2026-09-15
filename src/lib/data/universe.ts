@@ -294,15 +294,21 @@ const TW_UNIVERSE_TTL_MS = 24 * 60 * 60_000;
 // lookup (by code, or by name via findSymbolByName) can find; see
 // twFullCompanySnapshot above, which is never capped.
 //
-// Raised from 200 to 500: fetchTwseQuotesBatch already chunks the whole
-// list into groups of 50 in one pipe-separated request per chunk (not one
-// request per symbol), so this only changes the batch from ~4 chunks to
-// ~10 — still nowhere near the "~100 concurrent connections" scale that
-// previously caused real rate-limiting on a *different* TWSE endpoint (the
-// per-candidate-per-month chart fetch used by momentum screening, bounded
-// separately by MOMENTUM_CHART_CONCURRENCY). Verified locally that
-// /api/search?market=TW still returns promptly at 500.
-const MAX_TWSE_UNIVERSE = 500;
+// Raised 200 -> 500 -> 1200. A user compared this site's TW coverage
+// against TWSE's own official listing count and found ~600 real, currently-
+// listed companies (roughly a third of the whole market) missing purely
+// because they sorted past the 500th slot — this cap, not a data-source
+// gap. TWSE's own open-data company listing (t187ap03_L) reports 1094 real
+// listings; 1200 covers that with headroom for new listings without needing
+// another bump soon. Confirmed live this is safe to raise: TPEx's own
+// MAX_TPEX_UNIVERSE below already sits at 900 (covering TPEx's real ~891
+// count) using the *same* mis.twse.com.tw chunked-batch mechanism (50
+// symbols per pipe-separated request) since TPEx quotes were switched onto
+// it — so 1200/50 = 24 chunks for TWSE is the same order of magnitude as
+// TPEx's already-proven 900/50 = 18, not a new scale of load. Re-verified
+// /api/search?market=TW still returns promptly and with correct data at
+// 1200 (see PROGRESS.md for the actual measured response).
+const MAX_TWSE_UNIVERSE = 1200;
 // TPEx (上櫃) headroom, added alongside MAX_TWSE_UNIVERSE above when TPEx
 // coverage was built. Deliberately a SEPARATE cap per exchange rather than
 // one shared MAX_TW_UNIVERSE — TPEx's whole-market quote snapshot

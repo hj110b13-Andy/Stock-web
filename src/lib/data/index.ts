@@ -539,13 +539,15 @@ export interface SearchFilters {
   maxPrice?: number;
   minVolume?: number;
   maxVolume?: number;
+  minTurnover?: number;
+  maxTurnover?: number;
   /**
    * 多選，跟 `sectors` 同一套「不衝突條件可以複選」的設計：不傳或空陣列＝不篩選；
    * 傳了就只保留 volumeTrend 落在這個集合裡的股票。見 types.ts 的 VolumeTrend /
    * SearchItem.volumeTrend 說明——這是價量關係推論，不是真實買賣單量能分類。
    */
   volumeTrends?: VolumeTrend[];
-  sortBy?: "changePercent" | "volume" | "price";
+  sortBy?: "changePercent" | "volume" | "price" | "turnover";
   sortDir?: "asc" | "desc";
 }
 
@@ -593,6 +595,7 @@ export async function searchStocks(filters: SearchFilters): Promise<SearchItem[]
         price: q.price,
         changePercent: q.changePercent,
         volume: q.volume,
+        turnover: q.price * q.volume,
         ...computeVolumeMetrics(q.changePercent, q.volume, avgVolume),
       };
     })
@@ -615,6 +618,12 @@ export async function searchStocks(filters: SearchFilters): Promise<SearchItem[]
   }
   if (filters.maxVolume !== undefined) {
     items = items.filter((i) => i.volume <= filters.maxVolume!);
+  }
+  if (filters.minTurnover !== undefined) {
+    items = items.filter((i) => i.turnover >= filters.minTurnover!);
+  }
+  if (filters.maxTurnover !== undefined) {
+    items = items.filter((i) => i.turnover <= filters.maxTurnover!);
   }
   if (filters.volumeTrends && filters.volumeTrends.length > 0) {
     const wantedTrends = new Set(filters.volumeTrends);
@@ -700,6 +709,7 @@ export async function getMultiSignalStocks(market: Market, minSignals = 2): Prom
           price: quote.price,
           changePercent: quote.changePercent,
           volume: quote.volume,
+          turnover: quote.price * quote.volume,
           ...computeVolumeMetrics(quote.changePercent, quote.volume, avgVolumeMap.get(entry.symbol)),
           signals,
         };

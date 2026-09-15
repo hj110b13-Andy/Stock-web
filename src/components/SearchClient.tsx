@@ -28,7 +28,7 @@ const VOLUME_TREND_OPTIONS: Array<{ value: VolumeTrend; label: string }> = [
   { value: "neutral", label: "量能不明顯" },
 ];
 
-type SortBy = "changePercent" | "volume" | "price";
+type SortBy = "changePercent" | "volume" | "price" | "turnover";
 type SortDir = "asc" | "desc";
 
 export default function SearchClient() {
@@ -40,7 +40,7 @@ export default function SearchClient() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold">搜尋 / 篩選股票</h1>
-        <p className="mt-1 text-sm text-(--text-secondary)">台股、美股分開顯示，各自可依產業、股價、成交量、漲跌幅、價量關係篩選與排序。</p>
+        <p className="mt-1 text-sm text-(--text-secondary)">台股、美股分開顯示，各自可依產業、股價、成交量、成交金額、漲跌幅、價量關係篩選與排序。</p>
       </div>
 
       <div className="rounded-lg border border-(--gridline) bg-(--surface-1) p-4 space-y-4">
@@ -118,6 +118,8 @@ function MarketSection({
   const [maxPrice, setMaxPrice] = useState("");
   const [minVolume, setMinVolume] = useState("");
   const [maxVolume, setMaxVolume] = useState("");
+  const [minTurnover, setMinTurnover] = useState("");
+  const [maxTurnover, setMaxTurnover] = useState("");
   const [volumeTrends, setVolumeTrends] = useState<VolumeTrend[]>([]);
   const [sortBy, setSortBy] = useState<SortBy>("changePercent");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
@@ -145,6 +147,8 @@ function MarketSection({
     if (maxPrice) params.set("maxPrice", maxPrice);
     if (minVolume) params.set("minVolume", minVolume);
     if (maxVolume) params.set("maxVolume", maxVolume);
+    if (minTurnover) params.set("minTurnover", minTurnover);
+    if (maxTurnover) params.set("maxTurnover", maxTurnover);
     if (volumeTrends.length > 0) params.set("volumeTrends", volumeTrends.join(","));
     if (minChangePercent) params.set("min", minChangePercent);
     if (maxChangePercent) params.set("max", maxChangePercent);
@@ -164,7 +168,7 @@ function MarketSection({
       clearTimeout(timer);
       controller.abort();
     };
-  }, [market, sectors, query, minChangePercent, maxChangePercent, minPrice, maxPrice, minVolume, maxVolume, volumeTrends, sortBy, sortDir]);
+  }, [market, sectors, query, minChangePercent, maxChangePercent, minPrice, maxPrice, minVolume, maxVolume, minTurnover, maxTurnover, volumeTrends, sortBy, sortDir]);
 
   function toggleSector(s: string) {
     setSectors((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]));
@@ -221,6 +225,29 @@ function MarketSection({
           />
         </div>
 
+        <div
+          className="flex items-center gap-1"
+          title={`成交金額門檻，單位${market === "TW" ? "新台幣" : "美元"}（例如 100000000 = ${market === "TW" ? "1億元" : "1億美元"}）；成交金額＝股價×成交量`}
+        >
+          <input
+            type="number"
+            inputMode="numeric"
+            placeholder="最低金額"
+            value={minTurnover}
+            onChange={(e) => setMinTurnover(e.target.value)}
+            className="w-24 rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1 text-xs"
+          />
+          <span className="text-(--text-muted)">–</span>
+          <input
+            type="number"
+            inputMode="numeric"
+            placeholder="最高金額"
+            value={maxTurnover}
+            onChange={(e) => setMaxTurnover(e.target.value)}
+            className="w-24 rounded-md border border-(--gridline) bg-(--surface-2) px-2 py-1 text-xs"
+          />
+        </div>
+
         <select
           value={sortBy}
           onChange={(e) => setSortBy(e.target.value as SortBy)}
@@ -228,6 +255,7 @@ function MarketSection({
         >
           <option value="changePercent">漲跌幅</option>
           <option value="volume">成交量</option>
+          <option value="turnover">成交金額</option>
           <option value="price">股價</option>
         </select>
         <button

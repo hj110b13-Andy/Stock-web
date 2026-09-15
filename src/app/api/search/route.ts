@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { searchStocks } from "@/lib/data";
 import type { Market, VolumeTrend } from "@/lib/data";
 
-const SORT_FIELDS = ["changePercent", "volume", "price"] as const;
+const SORT_FIELDS = ["changePercent", "volume", "price", "turnover"] as const;
 type SortField = (typeof SORT_FIELDS)[number];
 
 const VOLUME_TRENDS = ["buy-leaning", "sell-leaning", "neutral"] as const;
@@ -57,6 +57,8 @@ export async function GET(req: NextRequest) {
       maxPrice: numberParam(sp.get("maxPrice")),
       minVolume: numberParam(sp.get("minVolume")),
       maxVolume: numberParam(sp.get("maxVolume")),
+      minTurnover: numberParam(sp.get("minTurnover")),
+      maxTurnover: numberParam(sp.get("maxTurnover")),
       volumeTrends,
       sortBy,
       sortDir,

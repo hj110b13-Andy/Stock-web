@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { SearchItem } from "@/lib/data";
-import { formatPercent, formatPrice, formatVolume, priceDirectionClass } from "@/lib/format";
+import { formatMarketCap, formatPercent, formatPrice, formatVolume, priceDirectionClass } from "@/lib/format";
 import WatchlistButton from "./WatchlistButton";
 
 export default function StockTable({ items, emptyLabel }: { items: SearchItem[]; emptyLabel?: string }) {
@@ -19,6 +19,7 @@ export default function StockTable({ items, emptyLabel }: { items: SearchItem[];
             <th className="py-2 pr-4 font-medium text-right">股價</th>
             <th className="py-2 pr-4 font-medium text-right">漲跌幅</th>
             <th className="py-2 pr-4 font-medium text-right">成交量</th>
+            <th className="py-2 pr-4 font-medium text-right">成交金額</th>
           </tr>
         </thead>
         <tbody>
@@ -59,6 +60,9 @@ export default function StockTable({ items, emptyLabel }: { items: SearchItem[];
                     {item.volumeTrend === "buy-leaning" ? "價漲量增" : "價跌量增"}
                   </span>
                 )}
+              </td>
+              <td className="py-2.5 pr-4 text-right tabular-nums text-(--text-secondary)">
+                {formatMarketCap(item.turnover, item.market === "TW" ? "TWD" : "USD")}
               </td>
             </tr>
           ))}
