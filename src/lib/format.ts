@@ -14,6 +14,26 @@ export function formatChange(value: number, currency: string): string {
 }
 
 /**
+ * For a total money AMOUNT (投資金額, 損益ਸ਼) rather than a per-share PRICE —
+ * formatPrice()'s TWD branch keeps 1 decimal place once the value passes
+ * 100 (right for a per-share quote like "251.5"), but a whole-dollar total
+ * like invested-amount or P&L has no meaningful fractional NT dollar once
+ * lib/portfolio.ts started truncating fee components to whole dollars, so
+ * forcing that same decimal on a total just prints a misleading trailing
+ * ".0". TWD totals round to the nearest whole dollar; USD keeps 2 decimals
+ * (cents are real money there).
+ */
+export function formatAmount(value: number, currency: string): string {
+  const decimals = currency === "TWD" ? 0 : 2;
+  return value.toLocaleString("zh-TW", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+}
+
+export function formatAmountChange(value: number, currency: string): string {
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${formatAmount(value, currency)}`;
+}
+
+/**
  * `value` is always raw shares internally (see lib/data/twse.ts — MIS's 張
  * count is converted to shares so it matches the historical-chart volume
  * unit). Taiwan investors read 成交量 as a plain 張 count though (every

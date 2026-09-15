@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import Link from "next/link";
 import type { Market, SearchItem } from "@/lib/data";
-import { formatChange, formatPercent, formatPrice, priceDirectionClass } from "@/lib/format";
+import { formatAmount, formatAmountChange, formatPercent, formatPrice, priceDirectionClass } from "@/lib/format";
 import { hasHolding, reorderGroup, updateHolding } from "@/lib/watchlist";
 import { breakEvenPrice, computeHoldingPnl, investedAmount } from "@/lib/portfolio";
 import WatchlistButton from "./WatchlistButton";
@@ -84,17 +84,16 @@ export default function WatchlistTable({ items, emptyLabel }: { items: HoldingIt
         <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-1 text-sm">
           <span>
             <span className="text-(--text-muted)">總成本：</span>
-            <span className="font-medium tabular-nums">{formatPrice(totalCost, currency)}</span>
+            <span className="font-medium tabular-nums">{formatAmount(totalCost, currency)}</span>
           </span>
           <span>
             <span className="text-(--text-muted)">總市值：</span>
-            <span className="font-medium tabular-nums">{formatPrice(totalValue, currency)}</span>
+            <span className="font-medium tabular-nums">{formatAmount(totalValue, currency)}</span>
           </span>
           <span>
             <span className="text-(--text-muted)">總損益：</span>
             <span className={`font-semibold tabular-nums ${priceDirectionClass(totalPnl)}`}>
-              {totalPnl >= 0 ? "+" : ""}
-              {totalPnl.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+              {formatAmountChange(totalPnl, currency)}
               {" "}({totalCost ? formatPercent((totalPnl / totalCost) * 100) : "—"})
             </span>
           </span>
@@ -409,13 +408,13 @@ function HoldingRow({
       )}
       {showHoldingColumns && (
         <td className="py-2.5 pr-4 text-right tabular-nums text-(--text-secondary)">
-          {invested != null ? formatPrice(invested, currency) : "—"}
+          {invested != null ? formatAmount(invested, currency) : "—"}
         </td>
       )}
       <td className={`py-2.5 pr-4 text-right tabular-nums ${pnl != null ? priceDirectionClass(pnl) : "text-(--text-muted)"}`}>
         {pnl != null ? (
           <>
-            {formatChange(pnl, currency)}
+            {formatAmountChange(pnl, currency)}
             {pnlPercent != null && <span className="ml-1 text-xs">({formatPercent(pnlPercent)})</span>}
           </>
         ) : (
